@@ -35,6 +35,8 @@
 - settings.py：配置加载与默认值管理
   - LLM_API_URL / LLM_MODEL：大模型调用配置
   - LLM_API_KEY：从环境变量 LLM_API_KEY 读取
+  - LLM_TIMEOUT_SECONDS：请求超时（秒）
+  - MAX_UPLOAD_MB / ALLOWED_EXTENSIONS：上传限制与允许类型
 
 ## utils
 - 作用：通用工具能力
@@ -53,3 +55,12 @@
 - index.html：页面入口与基础布局
 - app.js：前端交互逻辑（上传文件、调用后端接口、渲染结果）
 - styles.css：页面样式
+
+# 可配置与个性化修改入口
+
+
+## 可配置与个性化修改入口
+- 更换大模型接口与模型名：config/settings.py（LLM_API_URL、LLM_MODEL）
+- 更换 API Key：通过环境变量 LLM_API_KEY
+- 调整 Prompt 规则：services/extract_service.py（build_prompt）
+- 调整结构化输出格式：schemas/models.py（字段与类型定义）
