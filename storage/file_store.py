@@ -36,3 +36,14 @@ def save_txt(resume_id: str, text: str) -> Path:
     path = txt_path(resume_id)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def result_path(resume_id: str) -> Path:
+    return settings.RESULTS_DIR / f"{resume_id}.json"
+
+
+def save_result_json(resume_id: str, json_text: str) -> Path:
+    ensure_storage_dirs()
+    path = result_path(resume_id)
+    path.write_text(json_text, encoding="utf-8")
+    return path

@@ -33,6 +33,8 @@
 - 作用：配置管理
 - __init__.py：包初始化
 - settings.py：配置加载与默认值管理
+  - LLM_API_URL / LLM_MODEL：大模型调用配置
+  - LLM_API_KEY：从环境变量 LLM_API_KEY 读取
 
 ## utils
 - 作用：通用工具能力
@@ -44,6 +46,7 @@
 - 作用：测试用例
 - __init__.py：包初始化
 - test_text_clean_service.py：文本清洗规则测试
+- test_extract_service.py：结构化抽取与 JSON 解析测试
 
 ## frontend
 - 作用：前端页面与静态资源，用于上传简历与展示解析结果

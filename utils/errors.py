@@ -8,3 +8,7 @@ class InvalidFileType(AppError):
 
 class PDFParseError(AppError):
     pass
+
+
+class LLMParseError(AppError):
+    pass

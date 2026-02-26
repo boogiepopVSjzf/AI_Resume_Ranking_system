@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -5,9 +6,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
+from services.extract_service import extract_structured_resume
 from services.pdf_service import pdf_to_text
-from storage.file_store import new_resume_id, save_pdf_bytes, save_txt
-from utils.errors import InvalidFileType, PDFParseError
+from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
+from utils.errors import AppError, InvalidFileType, LLMParseError, PDFParseError
 from utils.logger import get_logger
 
 app = FastAPI()
@@ -55,6 +57,26 @@ async def upload_resume(file: UploadFile = File(...)):
             "txt_path": f"storage/txts/{txt_path.name}",
         }
     )
+
+
+@app.post("/api/extract")
+async def extract_resume(payload: dict):
+    resume_id = payload.get("resume_id")
+    text = payload.get("text")
+
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="text 不能为空")
+
+    try:
+        structured = extract_structured_resume(text)
+    except (LLMParseError, AppError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    json_text = structured.model_dump_json(ensure_ascii=False)
+    if isinstance(resume_id, str) and resume_id:
+        save_result_json(resume_id, json_text)
+
+    return JSONResponse(json.loads(json_text))
 
 
 @app.exception_handler(InvalidFileType)
