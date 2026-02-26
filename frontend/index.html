@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>简历解析验证</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>PDF 转 TXT 验证</h1>
+      <form id="upload-form">
+        <input id="file-input" type="file" accept=".pdf" />
+        <button type="submit">上传并解析</button>
+      </form>
+      <div id="status" class="status"></div>
+      <div class="result">
+        <h2>解析结果</h2>
+        <pre id="output"></pre>
+      </div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

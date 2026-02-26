@@ -2,6 +2,7 @@
 
 ## 根目录
 - main.py：程序入口，负责初始化应用并串联上传、转换、抽取流程
+- requirements.txt：Python 依赖清单
 
 ## routes
 - 作用：接口层，接收外部请求并返回结果
@@ -11,6 +12,7 @@
 - 作用：核心业务逻辑与编排
 - __init__.py：包初始化
 - pdf_service.py：PDF 转 TXT 的解析与文本抽取
+- text_clean_service.py：PDF 文本清洗与格式规范化
 - llm_service.py：LLM API 调用与响应解析
 - extract_service.py：从 TXT 到结构化数据的流程编排
 
@@ -41,6 +43,7 @@
 ## tests
 - 作用：测试用例
 - __init__.py：包初始化
+- test_text_clean_service.py：文本清洗规则测试
 
 ## frontend
 - 作用：前端页面与静态资源，用于上传简历与展示解析结果
