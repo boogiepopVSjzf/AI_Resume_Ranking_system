@@ -4,8 +4,51 @@ from typing import Any, Dict
 import requests
 
 from config import settings
-from utils.errors import AppError
+from utils.errors import AppError,LLMError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+# Define custom network exceptions
+class TransientNetworkError(Exception):
+    pass
+
+def is_transient_error(exception):
+    """
+    Return True if the error is worth retrying.
+    Do NOT retry on 400 (Bad Request) or 401 (Unauthorized).
+    """
+    return isinstance(exception, TransientNetworkError)
+
+# Retry up to 4 times, waiting 2^x * 1 seconds between each retry (2s, 4s, 8s)
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(TransientNetworkError)
+)
+def call_llm_with_retry(prompt: str) -> str:
+    """
+    Makes the actual HTTP call to the LLM. 
+    Handles retries for transient errors automatically.
+    """
+    try:
+        response = requests.post(
+            "YOUR_API_URL", 
+            json={"messages": [{"role": "user", "content": prompt}]},
+            timeout=10
+        )
+        
+        # If API returns 429 (Rate Limit) or 500+ (Server Error), raise custom exception to trigger retry
+        if response.status_code == 429 or response.status_code >= 500:
+            raise TransientNetworkError(f"Temporary API failure: {response.status_code}")
+            
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+        
+    except requests.exceptions.Timeout:
+        # Timeouts are also transient, trigger retry
+        raise TransientNetworkError("Request timed out")
+    except requests.exceptions.RequestException as e:
+        # For non-transient errors (like 401 Unauthorized), wrap and raise immediately
+        raise LLMError(f"Permanent LLM failure: {str(e)}")
 
 class LLMError(AppError):
     pass
