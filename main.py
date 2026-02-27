@@ -9,11 +9,15 @@ from config import settings
 from services.extract_service import extract_structured_resume
 from services.pdf_service import pdf_to_text
 from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
+from storage.db_store import init_db, save_parsed_resume
 from utils.errors import AppError, InvalidFileType, LLMParseError, PDFParseError
 from utils.logger import get_logger
 
 app = FastAPI()
 logger = get_logger("app")
+
+# Initialize the SQLite database schema on app startup
+init_db()
 
 app.mount("/static", StaticFiles(directory=settings.BASE_DIR / "frontend"), name="static")
 
