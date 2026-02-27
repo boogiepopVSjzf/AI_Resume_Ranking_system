@@ -65,6 +65,15 @@ async def upload_resume(file: UploadFile = File(...)):
 
 @app.post("/api/extract")
 async def extract_resume(payload: dict):
+    """
+    Extract structured resume information from plain text.
+
+    This endpoint:
+      1) accepts resume_id and text from the frontend,
+      2) calls the extraction service to get a ResumeStructured object,
+      3) saves the result to both JSON file storage and SQLite database,
+      4) returns the structured data as JSON to the client.
+    """
     resume_id = payload.get("resume_id")
     text = payload.get("text")
 
@@ -72,14 +81,21 @@ async def extract_resume(payload: dict):
         raise HTTPException(status_code=400, detail="text 不能为空")
 
     try:
+        # Call the extraction service to get a structured resume
         structured = extract_structured_resume(text)
     except (LLMParseError, AppError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    # Serialize the structured resume to JSON for file storage and response
     json_text = structured.model_dump_json(ensure_ascii=False)
-    if isinstance(resume_id, str) and resume_id:
-        save_result_json(resume_id, json_text)
 
+    if isinstance(resume_id, str) and resume_id:
+        # 1) Keep the existing behavior: save result as JSON file
+        save_result_json(resume_id, json_text)
+        # 2) New behavior: also persist the structured resume into SQLite DB
+        save_parsed_resume(resume_id, structured)
+
+    # Return the structured data back to the frontend
     return JSONResponse(json.loads(json_text))
 
 
