@@ -2,9 +2,34 @@ import json
 import re
 from typing import Any, Dict
 
-from schemas.models import ResumeStructured
+from pydantic import ValidationError
+from schemas.models import ResumeStructured, ResumeSchema
 from services.llm_service import call_llm
-from utils.errors import LLMParseError
+from utils.errors import LLMParseError, LLMError
+
+def clean_and_parse_llm_output(raw_output: str) -> ResumeSchema:
+    """
+    Cleans the LLM output and attempts to validate it against the Pydantic schema.
+    """
+    # Step 1: Strip markdown formatting (e.g., ```json ... ```)
+    cleaned_text = re.sub(r"```json\s*", "", raw_output)
+    cleaned_text = re.sub(r"```\s*", "", cleaned_text)
+    
+    try:
+        # Step 2: Attempt to parse string to JSON dict
+        parsed_dict = json.loads(cleaned_text)
+        
+        # Step 3: Enforce strict schema validation using Pydantic
+        # If the LLM missed a required field, this will raise a ValidationError
+        valid_resume = ResumeSchema(**parsed_dict)
+        return valid_resume
+        
+    except json.JSONDecodeError:
+        # Fallback/Error handling if the LLM output is completely mangled
+        raise LLMError("LLM returned malformed JSON structure.")
+    except ValidationError as e:
+        # Fallback/Error handling if the LLM returned JSON, but it violates our schema requirements
+        raise LLMError(f"LLM output does not match required schema: {str(e)}")
 
 
 def build_prompt(text: str) -> str:
