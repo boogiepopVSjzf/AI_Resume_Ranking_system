@@ -82,11 +82,11 @@ def test_negative_missing_api_url(monkeypatch):
     monkeypatch.setattr(settings, "LLM_API_URL", "")
     with pytest.raises(LLMError) as ex:
         call_llm("hello")
-    assert "未配置 LLM_API_URL" in str(ex.value)
+    assert "LLM_API_URL Not configured" in str(ex.value)
 
 
 def test_negative_requests_exception(monkeypatch, patch_settings):
-    """Negative: requests.post raises exception -> LLMError('LLM 请求失败')."""
+    """Negative: requests.post raises exception -> LLMError('LLM Request Fail')."""
     import requests
 
     def fake_post(*args, **kwargs):
@@ -96,7 +96,7 @@ def test_negative_requests_exception(monkeypatch, patch_settings):
 
     with pytest.raises(LLMError) as ex:
         call_llm("hello")
-    assert "LLM 请求失败" in str(ex.value)
+    assert "LLM Request Fail" in str(ex.value)
 
 
 def test_negative_http_500_with_detail(monkeypatch, patch_settings):
@@ -110,7 +110,7 @@ def test_negative_http_500_with_detail(monkeypatch, patch_settings):
 
     with pytest.raises(LLMError) as ex:
         call_llm("hello")
-    assert "LLM 返回错误: 500" in str(ex.value)
+    assert "LLM Request Fail: 500" in str(ex.value)
     assert "server error" in str(ex.value)
 
 
@@ -125,7 +125,7 @@ def test_negative_http_401_no_detail(monkeypatch, patch_settings):
 
     with pytest.raises(LLMError) as ex:
         call_llm("hello")
-    assert "LLM 返回错误: 401" in str(ex.value)
+    assert "LLM without detail should raise LLMError without detail : 401" in str(ex.value)
 
 
 def test_edge_unknown_json_structure_falls_back_to_json_dump(monkeypatch, patch_settings):
