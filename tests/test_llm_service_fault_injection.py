@@ -1,4 +1,6 @@
 """
+To run the code: python -m pytest -q tests/test_llm_service_fault_injection.py
+
 Fault Injection and Tolerance Tests for LLM Service.
 
 This module uses the `responses` library to intercept HTTP calls made by `requests`.
@@ -26,7 +28,7 @@ def patch_settings(monkeypatch):
     """
     from config import settings
 
-    monkeypatch.setattr(settings, "LLM_API_URL", "http://localhost:11434/v1")
+    monkeypatch.setattr(settings, "LLM_API_URL", "http://localhost:11434/v1/chat/completions")
     monkeypatch.setattr(settings, "LLM_API_KEY", "dummy-key")
     monkeypatch.setattr(settings, "LLM_MODEL", "dummy-model")
     monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 5)
