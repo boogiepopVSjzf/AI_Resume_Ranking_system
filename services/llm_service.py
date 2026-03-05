@@ -76,7 +76,7 @@ def _build_payload(prompt: str, url: str) -> Dict[str, Any]:
         return {"model": settings.LLM_MODEL, "prompt": prompt}
     return {"prompt": prompt}
 
-
+@with_llm_error_tracking
 def call_llm(prompt: str) -> str:
     if not settings.LLM_API_URL:
         raise LLMError("LLM_API_URL configuration is completely missing")
