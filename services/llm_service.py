@@ -50,8 +50,6 @@ def call_llm_with_retry(prompt: str) -> str:
         # For non-transient errors (like 401 Unauthorized), wrap and raise immediately
         raise LLMError(f"Permanent LLM failure: {str(e)}")
 
-class LLMError(AppError):
-    pass
 
 
 def _normalize_url(raw_url: str) -> str:
@@ -81,7 +79,7 @@ def _build_payload(prompt: str, url: str) -> Dict[str, Any]:
 
 def call_llm(prompt: str) -> str:
     if not settings.LLM_API_URL:
-        raise LLMError("未配置 LLM_API_URL")
+        raise LLMError("LLM_API_URL configuration is completely missing")
 
     url = _normalize_url(settings.LLM_API_URL)
     headers: Dict[str, str] = {"Content-Type": "application/json"}
@@ -96,13 +94,25 @@ def call_llm(prompt: str) -> str:
             timeout=settings.LLM_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        raise LLMError("LLM 请求失败") from exc
+        raise LLMError("API takes too long to respond") from exc
 
     if resp.status_code >= 400:
-        detail = resp.text.strip()
+        detail = ""
+        try:
+            err = resp.json()
+            if isinstance(err, dict):
+                msg = err.get("error", {}).get("message")
+                if isinstance(msg, str):
+                    detail = msg.strip()
+        except Exception:
+            pass
+
+        if not detail:
+            detail = (resp.text or "").strip()
+
         if detail:
-            raise LLMError(f"LLM 返回错误: {resp.status_code} {detail}")
-        raise LLMError(f"LLM 返回错误: {resp.status_code}")
+            raise LLMError(f"{resp.status_code} {detail}")
+        raise LLMError(f"{resp.status_code}")
 
     try:
         data = resp.json()
