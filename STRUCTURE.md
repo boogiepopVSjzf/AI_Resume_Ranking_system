@@ -11,7 +11,7 @@
 ## services
 - 作用：核心业务逻辑与编排
 - __init__.py：包初始化
-- pdf_service.py：PDF 转 TXT 的解析与文本抽取
+- pdf_to_txt.py：PDF 转 TXT 的解析与文本抽取
 - text_clean_service.py：PDF 文本清洗与格式规范化
 - llm_service.py：LLM API 调用与响应解析
 - extract_service.py：从 TXT 到结构化数据的流程编排
@@ -49,12 +49,6 @@
 - __init__.py：包初始化
 - test_text_clean_service.py：文本清洗规则测试
 - test_extract_service.py：结构化抽取与 JSON 解析测试
-
-## frontend
-- 作用：前端页面与静态资源，用于上传简历与展示解析结果
-- index.html：页面入口与基础布局
-- app.js：前端交互逻辑（上传文件、调用后端接口、渲染结果）
-- styles.css：页面样式
 
 # 可配置与个性化修改入口
 

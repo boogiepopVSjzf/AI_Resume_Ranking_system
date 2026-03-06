@@ -7,44 +7,67 @@ from services.llm_service import call_llm
 from utils.errors import LLMParseError
 
 
+def _schema_hint_from_model() -> Dict[str, Any]:
+    schema = ResumeStructured.model_json_schema()
+    defs = schema.get("$defs", {})
+
+    def resolve_ref(ref: str) -> Dict[str, Any]:
+        if ref.startswith("#/$defs/"):
+            key = ref.split("/")[-1]
+            return defs.get(key, {})
+        return {}
+
+    def map_simple(type_name: str, optional: bool) -> str:
+        if optional:
+            return f"{type_name} or null"
+        return type_name
+
+    def build(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return "string"
+        if "$ref" in node:
+            return build(resolve_ref(node["$ref"]))
+        if "anyOf" in node:
+            any_of = node.get("anyOf") or []
+            non_null = [
+                item
+                for item in any_of
+                if not (isinstance(item, dict) and item.get("type") == "null")
+            ]
+            optional = len(non_null) != len(any_of)
+            if not non_null:
+                return "string or null"
+            built = build(non_null[0])
+            if isinstance(built, str):
+                return map_simple(built.replace(" or null", ""), optional)
+            return built
+        node_type = node.get("type")
+        if node_type == "object":
+            props = node.get("properties") or {}
+            return {key: build(val) for key, val in props.items()}
+        if node_type == "array":
+            items = node.get("items") or {}
+            return [build(items)]
+        if isinstance(node_type, list):
+            optional = "null" in node_type
+            non_null = [t for t in node_type if t != "null"]
+            base = non_null[0] if non_null else "string"
+            return map_simple(base, optional)
+        if node_type == "string":
+            return "string"
+        if node_type == "integer":
+            return "integer"
+        if node_type == "number":
+            return "number"
+        if node_type == "boolean":
+            return "boolean"
+        return "string"
+
+    return build(schema)
+
+
 def build_prompt(text: str) -> str:
-    schema_hint = {
-        "name": "string or null",
-        "email": "string or null",
-        "phone": "string or null",
-        "location": "string or null",
-        "summary": "string or null",
-        "skills": ["string"],
-        "education": [
-            {
-                "school": "string or null",
-                "degree": "string or null",
-                "major": "string or null",
-                "start_date": "string or null",
-                "end_date": "string or null",
-                "description": "string or null",
-            }
-        ],
-        "experience": [
-            {
-                "company": "string or null",
-                "title": "string or null",
-                "location": "string or null",
-                "start_date": "string or null",
-                "end_date": "string or null",
-                "highlights": ["string"],
-            }
-        ],
-        "projects": [
-            {
-                "name": "string or null",
-                "role": "string or null",
-                "start_date": "string or null",
-                "end_date": "string or null",
-                "highlights": ["string"],
-            }
-        ],
-    }
+    schema_hint = _schema_hint_from_model()
     return (
         "你是一个简历解析器。请把输入简历文本转换为JSON。"
         "只输出JSON，不要解释。字段必须匹配以下结构：\n"

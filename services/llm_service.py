@@ -37,13 +37,14 @@ def _build_payload(prompt: str, url: str) -> Dict[str, Any]:
 
 
 def call_llm(prompt: str) -> str:
-    if not settings.LLM_API_URL:
-        raise LLMError("未配置 LLM_API_URL")
+    if not settings.LLM_BASE_URL:
+        raise LLMError("未配置 LLM_BASE_URL")
+    if not settings.LLM_API_KEY:
+        raise LLMError("未配置 LLM_API_KEY")
 
-    url = _normalize_url(settings.LLM_API_URL)
+    url = _normalize_url(settings.LLM_BASE_URL)
     headers: Dict[str, str] = {"Content-Type": "application/json"}
-    if settings.LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
+    headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
 
     try:
         resp = requests.post(
