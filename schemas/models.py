@@ -35,6 +35,8 @@ class ResumeStructured(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    YoE: Optional[str] = None
+    Highest Education Level: Optional[]=None
     location: Optional[str] = None
     summary: Optional[str] = None
     skills: List[str] = Field(default_factory=list)
