@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import List, Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -41,3 +40,7 @@ class ResumeStructured(BaseModel):
     education: List[EducationItem] = Field(default_factory=list)
     experience: List[ExperienceItem] = Field(default_factory=list)
     projects: List[ProjectItem] = Field(default_factory=list)
+
+class ExtractionInput(BaseModel):
+    resume_id: Optional[str] = None
+    text: str

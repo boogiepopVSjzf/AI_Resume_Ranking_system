@@ -4,7 +4,7 @@ from typing import Any, Dict
 import requests
 
 from config import settings
-from utils.errors import AppError,LLMError
+from utils.errors import LLMError, LLMParseError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Define custom network exceptions
@@ -76,64 +76,109 @@ def _build_payload(prompt: str, url: str) -> Dict[str, Any]:
         return {"model": settings.LLM_MODEL, "prompt": prompt}
     return {"prompt": prompt}
 
-@with_llm_error_tracking
+
+import requests
+from config import settings
+
 def call_llm(prompt: str) -> str:
-    if not settings.LLM_API_URL:
-        raise LLMError("LLM_API_URL configuration is completely missing")
+    
+    url = f"{settings.LLM_API_URL}?key={settings.LLM_API_KEY}"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-    url = _normalize_url(settings.LLM_API_URL)
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
-    if settings.LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json" 
+        }
+    }
 
+    print(f"DEBUG: Calling Native URL: {url.split('?')[0]}...")
+
+    response = requests.post(
+        url, 
+        headers=headers, 
+        json=payload, 
+        timeout=settings.LLM_TIMEOUT_SECONDS
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
+
+    # 解析原生返回格式
+    data = response.json()
     try:
-        resp = requests.post(
-            url,
-            headers=headers,
-            json=_build_payload(prompt, url),
-            timeout=settings.LLM_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        raise LLMError("API takes too long to respond") from exc
+        # 路径通常是 candidates[0] -> content -> parts[0] -> text
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as e:
+        raise Exception(f"Unexpected API response structure: {e}")
+    
+# @with_llm_error_tracking
+# def call_llm(prompt: str) -> str:
+#     if not settings.LLM_API_URL:
+#         raise LLMError("LLM_API_URL configuration is completely missing")
 
-    if resp.status_code >= 400:
-        detail = ""
-        try:
-            err = resp.json()
-            if isinstance(err, dict):
-                msg = err.get("error", {}).get("message")
-                if isinstance(msg, str):
-                    detail = msg.strip()
-        except Exception:
-            pass
+#     url = _normalize_url(settings.LLM_API_URL)
+#     headers: Dict[str, str] = {"Content-Type": "application/json"}
+#     if settings.LLM_API_KEY:
+#         headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
 
-        if not detail:
-            detail = (resp.text or "").strip()
+#     try:
+#         resp = requests.post(
+#             url,
+#             headers=headers,
+#             json=_build_payload(prompt, url),
+#             timeout=settings.LLM_TIMEOUT_SECONDS,
+#         )
+#     except Exception as exc:
+#         raise LLMError("API takes too long to respond") from exc
 
-        if detail:
-            raise LLMError(f"{resp.status_code} {detail}")
-        raise LLMError(f"{resp.status_code}")
+#     if resp.status_code >= 400:
+#         detail = ""
+#         try:
+#             err = resp.json()
+#             if isinstance(err, dict):
+#                 msg = err.get("error", {}).get("message")
+#                 if isinstance(msg, str):
+#                     detail = msg.strip()
+#         except Exception:
+#             pass
 
-    try:
-        data = resp.json()
-    except Exception:
-        return resp.text
+#         if not detail:
+#             detail = (resp.text or "").strip()
 
-    if isinstance(data, dict):
-        for key in ("text", "content", "output"):
-            if key in data and isinstance(data[key], str):
-                return data[key]
-        for key in ("choices",):
-            if key in data and isinstance(data[key], list) and data[key]:
-                first = data[key][0]
-                if isinstance(first, dict):
-                    if "text" in first and isinstance(first["text"], str):
-                        return first["text"]
-                    msg = first.get("message")
-                    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                        return msg["content"]
-                    delta = first.get("delta")
-                    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                        return delta["content"]
+#         if detail:
+#             raise LLMError(f"{resp.status_code} {detail}")
+#         raise LLMError(f"{resp.status_code}")
 
-    return json.dumps(data, ensure_ascii=False)
+#     try:
+#         data = resp.json()
+#     except Exception:
+#         return resp.text
+
+#     if isinstance(data, dict):
+#         for key in ("text", "content", "output"):
+#             if key in data and isinstance(data[key], str):
+#                 return data[key]
+#         for key in ("choices",):
+#             if key in data and isinstance(data[key], list) and data[key]:
+#                 first = data[key][0]
+#                 if isinstance(first, dict):
+#                     if "text" in first and isinstance(first["text"], str):
+#                         return first["text"]
+#                     msg = first.get("message")
+#                     if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+#                         return msg["content"]
+#                     delta = first.get("delta")
+#                     if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+#                         return delta["content"]
+
+#     return json.dumps(data, ensure_ascii=False)
