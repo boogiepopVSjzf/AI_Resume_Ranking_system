@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Optional
 
 from pydantic import ValidationError
 
 from schemas.models import ExtractionInput, ResumeStructured
 from services.llm_service import call_llm
 from utils.errors import LLMParseError, NotResumeError
-
 
 RESUME_HINT_KEYWORDS = {
     "education",
@@ -36,10 +36,8 @@ def _normalize_text(text: str) -> str:
 def _looks_like_resume(text: str) -> bool:
     """Apply a small heuristic check before calling the LLM."""
     normalized = _normalize_text(text).lower()
-
     if len(normalized) < 80:
         return False
-
     hit_count = sum(1 for kw in RESUME_HINT_KEYWORDS if kw in normalized)
     return hit_count >= 2
 
@@ -85,8 +83,14 @@ Resume text:
 """.strip()
 
 
-def extract_structured_resume(data: ExtractionInput) -> ResumeStructured:
-    """Convert raw resume text into a validated ResumeStructured object."""
+def extract_structured_resume(
+    data: ExtractionInput,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> ResumeStructured:
+    """
+    Convert raw resume text into a validated ResumeStructured object.
+    """
     if not data.text.strip():
         raise NotResumeError("Input text is empty")
 
@@ -94,10 +98,12 @@ def extract_structured_resume(data: ExtractionInput) -> ResumeStructured:
         raise NotResumeError("Input text does not look like a resume")
 
     prompt = _build_prompt(data.text)
-    raw_output = call_llm(prompt)
+    raw_output = call_llm(prompt, provider=provider, model=model)
     parsed = _extract_json(raw_output)
 
     try:
         return ResumeStructured.model_validate(parsed)
     except ValidationError as exc:
-        raise LLMParseError(f"LLM output does not match ResumeStructured schema: {exc}") from exc
+        raise LLMParseError(
+            f"LLM output does not match ResumeStructured schema: {exc}"
+        ) from exc
