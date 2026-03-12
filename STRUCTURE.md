@@ -50,6 +50,62 @@
 - test_text_clean_service.py：文本清洗规则测试
 - test_extract_service.py：结构化抽取与 JSON 解析测试
 
+# 上传与 PDF 解析阶段的异常防护（设计说明）
+
+本项目第一步链路为：上传 PDF（routes）→ 保存 PDF（storage）→ PDF 转 TXT（services）→ 保存 TXT（storage）。
+
+下面仅覆盖当前要考虑的三类场景，并说明“应该在哪个文件加什么样的校验/分支处理”，不涉及具体代码实现。
+
+## 1) 必须是文本 PDF（拒绝非 PDF、伪装 PDF、图片 PDF）
+
+### 目标
+- 只允许“真正的 PDF 文件”进入解析流程
+- 拒绝扩展名是 .pdf 但内容不是 PDF 的文件
+- 拒绝只有图片、没有文字层的 PDF（即扫描件/图片 PDF）
+
+### 方案与落点
+- routes/api.py（上传入口）
+  - 现有：根据文件扩展名限制只接受 .pdf，并做上传大小限制
+  - 补充：在读取完整内容后，增加“PDF 魔数/文件头”校验
+    - 检查前若干字节是否包含 PDF 标识（例如以 %PDF- 开头）
+    - 不符合则直接返回 400（InvalidFileType / HTTPException）并中断流程
+  - 补充：若后续解析阶段判定 PDF 不符合要求（例如加密/图片 PDF），应清理已落盘的 PDF
+    - 解析失败时删除 storage/pdfs/{resume_id}.pdf，避免残留无效文件
+- services/pdf_to_txt.py（解析入口）
+  - 补充：对“图片 PDF”的判定与拒绝
+    - 解析后如果提取出的文本为空或仅包含极少可见字符（可用阈值判断，例如去掉空白后长度很小），视为“无文字层”
+    - 这种情况抛出 PDFParseError（例如“疑似扫描件 PDF，不支持”），由 routes/api.py 捕获后返回 4xx/5xx（建议 422 或 400）
+
+## 2) 文件名限制（拒绝超长文件名）
+
+### 目标
+- 防止超长文件名导致存储/日志/文件系统异常
+- 降低路径穿越和奇怪字符带来的风险（即便当前存储不使用原始文件名，也建议做基础校验）
+
+### 方案与落点
+- config/settings.py
+  - 增加可配置项：MAX_FILENAME_LENGTH（例如 128 或 255）
+- routes/api.py
+  - 在读取文件内容前，校验 UploadFile.filename
+    - filename 为空：返回 400
+    - filename 长度超过 MAX_FILENAME_LENGTH：返回 400
+    - 可选：对不可见字符、路径分隔符进行拒绝或规范化（本阶段不强制）
+
+## 3) 加密 PDF（受保护导致无法读取）
+
+### 目标
+- 明确区分“PDF 损坏/解析失败”与“PDF 加密导致无法读取”
+- 对加密 PDF 给出可理解的错误提示（例如提示用户导出未加密版本）
+
+### 方案与落点
+- services/pdf_to_txt.py
+  - 在创建/读取 PdfReader 后，优先检测 is_encrypted
+    - 如果加密且无法解密，抛出 PDFParseError（例如“PDF 已加密，无法解析”）
+    - 若未来要支持密码，可扩展为在此处接入密码参数（当前不做）
+- routes/api.py
+  - 复用现有的 PDFParseError 捕获逻辑，将错误转换为 HTTP 返回
+    - 建议把“加密 PDF”作为 422（输入不可处理）或 400（输入不合规）返回，而不是 500
+
 # 可配置与个性化修改入口
 
 

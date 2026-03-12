@@ -11,6 +11,8 @@ RESULTS_DIR = STORAGE_DIR / "results"
 ALLOWED_EXTENSIONS = {".pdf"}
 MAX_UPLOAD_MB = 20
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+MAX_FILENAME_LENGTH = 128
+MIN_EXTRACTED_TEXT_CHARS = 30
 
 LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL = "qwen3.5-122b-a10b"
