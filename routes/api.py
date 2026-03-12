@@ -7,7 +7,8 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from services.extract_service import extract_structured_resume
-from services.pdf_to_txt import pdf_to_txt
+# use pdf_service in this repo
+from services.pdf_service import pdf_to_text as pdf_to_txt
 from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
 from utils.errors import AppError, InvalidFileType, LLMParseError, PDFParseError
 from utils.logger import get_logger
@@ -172,13 +173,17 @@ async def extract_resume(payload: dict):
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
+    from schemas.models import ExtractionInput
+
+    extraction_input = ExtractionInput(text=text, resume_id=resume_id if isinstance(resume_id, str) else None)
+
     try:
-        structured = extract_structured_resume(text)
+        structured = extract_structured_resume(extraction_input)
     except (LLMParseError, AppError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     json_text = structured.model_dump_json(ensure_ascii=False)
-    if isinstance(resume_id, str) and resume_id:
-        save_result_json(resume_id, json_text)
+    if extraction_input.resume_id:
+        save_result_json(extraction_input.resume_id, json_text)
 
     return JSONResponse(json.loads(json_text))
