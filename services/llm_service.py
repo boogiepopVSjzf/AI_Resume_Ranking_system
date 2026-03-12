@@ -7,7 +7,7 @@ from config import settings
 from utils.errors import LLMError
 
 
-SUPPORTED_PROVIDERS = {"gemini", "openai", "ollama"}
+SUPPORTED_PROVIDERS = {"dashscope", "gemini", "openai", "ollama"}
 
 
 def _resolve_provider(provider: Optional[str]) -> str:
@@ -21,6 +21,8 @@ def _resolve_model(provider: str, model: Optional[str]) -> str:
     if model:
         return model
 
+    if provider == "dashscope":
+        return settings.LLM_MODEL
     if provider == "gemini":
         return settings.GEMINI_MODEL
     if provider == "openai":
@@ -138,6 +140,45 @@ def _call_ollama(prompt: str, model: str) -> str:
         raise LLMError(f"Unexpected Ollama response structure: {exc}") from exc
 
 
+def _call_dashscope(prompt: str, model: str) -> str:
+    """Call Aliyun Dashscope API"""
+    if not settings.LLM_API_KEY:
+        raise LLMError("Missing LLM_API_KEY")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1,
+    }
+
+    try:
+        response = requests.post(
+            f"{settings.LLM_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"Dashscope request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        raise LLMError(f"Dashscope API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"Unexpected Dashscope response structure: {exc}") from exc
+
+
 def call_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
     """
     Unified LLM entrypoint.
@@ -146,6 +187,8 @@ def call_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] =
     resolved_provider = _resolve_provider(provider)
     resolved_model = _resolve_model(resolved_provider, model)
 
+    if resolved_provider == "dashscope":
+        return _call_dashscope(prompt, resolved_model)
     if resolved_provider == "gemini":
         return _call_gemini(prompt, resolved_model)
     if resolved_provider == "openai":
