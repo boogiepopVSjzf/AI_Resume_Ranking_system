@@ -122,7 +122,7 @@ def _call_ollama(prompt: str, model: str) -> str:
             settings.OLLAMA_API_URL,
             headers={"Content-Type": "application/json"},
             json=payload,
-            timeout=settings.LLM_TIMEOUT_SECONDS,
+            timeout=settings.OLLAMA_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
         raise LLMError(f"Ollama request failed: {exc}") from exc

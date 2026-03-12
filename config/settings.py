@@ -45,10 +45,7 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/com
 # Ollama config
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL",  "deepseek-r1:1.5b")
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
-ALLOWED_EXTENSIONS = {".pdf"}
-MAX_UPLOAD_MB = 20
-LLM_API_KEY = os.getenv("GEMINI_API_KEY", "") 
-LLM_TIMEOUT_SECONDS = 60
+OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 
 LLM_MODEL = "gemini-3-flash-preview"
 LLM_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{LLM_MODEL}:generateContent"
