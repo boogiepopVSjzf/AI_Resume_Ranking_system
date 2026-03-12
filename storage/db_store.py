@@ -51,31 +51,37 @@ def init_db() -> None:
 
 def save_parsed_resume(resume_id: str, structured: ResumeStructured) -> None:
     """
-    Save or update a parsed resume in the database.
+    Save a parsed structured resume into SQLite.
 
-    Args:
-        resume_id: The unique ID of the resume (used in file storage as well).
-        structured: The parsed resume object (Pydantic model).
-
-    Behavior:
-        - Converts the Pydantic model to JSON.
-        - Stores it in the 'resumes' table.
-        - Uses INSERT OR REPLACE so that re-parsing the same resume_id
-          will update the existing record.
+    Corner cases handled here:
+    - empty or invalid resume_id
+    - database/table not initialized yet
+    - repeated writes to the same resume_id
+    - rollback on database write failure
     """
+    if not isinstance(resume_id, str) or not resume_id.strip():
+        raise ValueError("resume_id must be a non-empty string")
+
+    # Ensure the database and table exist before writing
+    init_db()
+
     conn = get_connection()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    # Serialize the structured resume to JSON string
-    json_text = structured.model_dump_json(ensure_ascii=False)
+        json_text = structured.model_dump_json(ensure_ascii=False)
 
-    cur.execute(
-        """
-        INSERT OR REPLACE INTO resumes (resume_id, profile_json)
-        VALUES (?, ?);
-        """,
-        (resume_id, json_text),
-    )
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO resumes (resume_id, profile_json)
+            VALUES (?, ?);
+            """,
+            (resume_id, json_text),
+        )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
