@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -18,7 +19,7 @@ logger = get_logger("api")
 async def read_upload_with_limit(
     file: UploadFile,
     max_bytes: int,
-    content_length: int | None,
+    content_length: Optional[int],
     chunk_size: int = 1024 * 1024,
 ) -> bytes:
     if content_length is not None and content_length > max_bytes:
