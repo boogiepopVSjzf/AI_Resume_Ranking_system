@@ -1,0 +1,21 @@
+Job Description
+
+About the Role
+We are looking for a data scientist to join our growing team.
+
+Responsibilities
+- Build dashboards and reports
+- Communicate with stakeholders
+- Analyze large datasets
+- Develop machine learning solutions
+
+Requirements
+- Bachelor's degree in a quantitative field
+- Experience with Python and SQL
+- Strong communication skills
+- Preferred qualifications include NLP experience
+
+What We Offer
+- Competitive compensation
+- Health insurance
+- Flexible work arrangements

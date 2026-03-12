@@ -1,0 +1,66 @@
+Leon Yiu 515 East Grant St #411 • Minneapolis, MN 55404
+(347) 400-4634 • yiuleon1@gmail.com
+http://www.linkedin.com/in/leonyiu
+Summary
+Quantitative developer and senior data scientist with 10+ ye ars of experience in the fina ncial services industry, with
+deep exposure to fixed income investment s and capital markets. Proven track record of building end-to-end ML pipelines,
+deploying production models in AWS, and leading cross-fu nctional teams to deliver data-driven transformation.
+Professional Experience
+Ameriprise Financial, Inc. 2 / 2 0 2 2 - 7/ 2025
+$45B diversified financial services company known for having a robust network of over 100,000 financial advisors
+Data Science Manager / Predictive Analytics
+- Built a weighted logistic regression machine learning model to identify the financial adviso rs with the highest risk of
+leaving to the competition.
+- Developed a highly efficient production-q uality ETL pipeline in Python that co mpiled raw proprietary data from SQL
+database tables, transformed the data into a time-series da taset, and produced real-time model predictions in under
+a quarter of the previous processing time.
+- Constructed a Hidden Markov model to help the internal Collections Team quantify the risks associated with
+outstanding loans, estimate the settlement value for ea ch loan, and produce cost-benefit analyses for various
+scenarios.
+- Worked closely with the Data, Operations and AWS Cloud Teams to prepare models for production environment and
+collaborated with the Model Risk Management Team to en sure model compliance with regulatory requirements.
+IHS Markit Limited 4/2018 - 11/2021
+Fixed income capital markets intelligence business of $22B global data and analytics provider
+Associate / Research & Analysis - Fixed Income
+- Engineered Python algorithms using NLP text extraction and random forest classification model to automate
+bondholder identification, reduci ng manual workload by 20%.
+- Delivered investor base analytics and market intelligence to corporate Treasury teams, informing capital markets
+and restructuring strategy.
+- Selected 1 of 7 employees for the company’s Innovation ThinkTank team, driving firmwide automation and data
+product initiatives.
+Japonica Partners 4/2013 - 1/2018
+$1B+ private equity firm that was the larges t private holder of Greek government bonds
+Associate / Investment Research
+- Worked directly with the CEO and the senior management team to analyze European governments and make key
+investments in European sovereign bonds.
+- Built financial models, sovereign risk analytics, and portfo lio dashboards supporting inve stment decisions in $5B of
+Greek government bonds.
+- Led cross-functional team of ten individuals to successfu lly execute $3.8B tender offer for Greek government bonds,
+the first-ever third-party tender offer for sovereign bonds.
+Anthony FangMiami FL(735) 500 - 6578a.fang@gmail.com
+Leon Yiu Page 2
+Deutsche Bank Securities 9 / 2 0 1 0 - 9 / 2 0 1 2
+U.S. investment grade debt origination and advisory business of global investment bank
+Analyst / Debt Capital Markets - Financial Institutions
+- Supported multiple teams responsible for executing $50B+ in lead-managed investment grade bond offerings for
+insurance and specialt y finance sectors.
+- Created capital structure models to analyze the effects of potential debt issuance and liability management
+transactions on issuer’s leverage and capital ratios.
+- Coordinated bond tender offer pitch wi th coverage, liability management, and debt syndicate teams to insurance
+giant AIG and won mandate for the $1.25B transaction.
+Freeman & Company 3/2009 - 8/2010
+Data analytics consulting firm that specializes in the financial sector
+Analyst / Strategy Consulting
+- Conducted data-driven strategic analysis to identify growth opportunities for U.S. banks’ capital markets divisions.
+- Delivered analytical insights on U.S. banks’ capita l markets businesses, client segmentation, and revenue
+optimization strategies.
+Education
+Dartmouth College 8 / 2 0 0 4 - 6 / 2 0 0 8
+Bachelor of Arts in Economics with High Honors Hanover, NH
+CFA Institute
+Completed CFA Level I
+Technical Skills
+- Programming: Python (Pandas, NumPy, Scikit-Learn, Statsmod els, Matplotlib, Seaborn, PyTorch), FastAPI
+- Data & Analytics : SQL, Excel (advanced functions, pivot tables), AWS (Lambda, EC2, S3)
+- Version Control & Visualization : Git, Dash, Tableau, PowerBI
+- Tools & Processes: ETL Pipelines, ML Model Lifecycle, Cloud Deployment, Data Governance
