@@ -33,9 +33,13 @@
 - 作用：配置管理
 - __init__.py：包初始化
 - settings.py：配置加载与默认值管理
-  - LLM_API_URL / LLM_MODEL：大模型调用配置
-  - LLM_API_KEY：从环境变量 LLM_API_KEY 读取
-  - LLM_TIMEOUT_SECONDS：请求超时（秒）
+  - LLM_BASE_URL / LLM_MODEL：Dashscope 兼容接口配置
+  - LLM_API_KEY：从环境变量 LLM_API_KEY 读取（Dashscope 使用）
+  - DEFAULT_LLM_PROVIDER / DEFAULT_LLM_MODEL：默认路由与默认模型
+  - OPENAI_API_URL / OPENAI_MODEL / OPENAI_API_KEY：OpenAI 配置
+  - GEMINI_API_URL_TEMPLATE / GEMINI_MODEL / GEMINI_API_KEY：Gemini 配置
+  - OLLAMA_API_URL / OLLAMA_MODEL：Ollama 配置
+  - LLM_TIMEOUT_SECONDS：请求超时（秒，OpenAI/Gemini/Dashscope 共用）
   - MAX_UPLOAD_MB / ALLOWED_EXTENSIONS：上传限制与允许类型
 
 ## utils
@@ -114,3 +118,24 @@
 - 更换 API Key：通过环境变量 LLM_API_KEY
 - 调整 Prompt 规则：services/extract_service.py（build_prompt）
 - 调整结构化输出格式：schemas/models.py（字段与类型定义）
+
+# 本次改动明细（2026-03-13）
+
+## 目标
+- 选择“第二种策略”：当上传已落盘但后续解析失败时，清理无效 PDF，避免残留
+- 同时修复若干会导致运行/测试失败的不一致点，保证程序可跑通
+
+## 代码改动点
+- 上传与解析失败清理：routes/api.py 的 /api/upload 与 /api/parse
+  - 新增：文件名长度限制（MAX_FILENAME_LENGTH）
+  - 新增：流式读取并限制上传大小（MAX_UPLOAD_BYTES，超限返回 413）
+  - 新增：PDF 文件头（%PDF-）校验，拒绝“伪装 PDF”
+  - 新增：PDFParseError 时删除已保存的 storage/pdfs/{resume_id}.pdf，并以 422 返回
+- PDF 转 TXT：services/pdf_to_txt.py
+  - 新增：加密 PDF 检测，抛出 PDFParseError
+  - 新增：最小可提取文本阈值（MIN_EXTRACTED_TEXT_CHARS），拒绝疑似图片 PDF
+- 路由/调用一致性修复
+  - routes/api.py：/api/parse 调用 extract_structured_resume 改为传入 ExtractionInput（避免类型不匹配）
+  - routes/upload.py：导入修正为 services/pdf_to_txt.py 的 pdf_to_txt（避免引用不存在的 services.pdf_service）
+  - routes/extract.py：修正缩进，避免语法/逻辑错误
+  - tests：修正导入与配置字段，确保 pytest 可运行

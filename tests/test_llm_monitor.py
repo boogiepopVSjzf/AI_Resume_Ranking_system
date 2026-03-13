@@ -5,7 +5,7 @@ import logging
 import requests
 import pytest
 
-from llm_monitor import with_llm_error_tracking, llm_error_logger
+from utils.llm_monitor import llm_error_logger, with_llm_error_tracking
 
 
 @pytest.fixture()

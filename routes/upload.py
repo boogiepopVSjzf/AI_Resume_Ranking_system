@@ -4,7 +4,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from config import settings
-from services.pdf_service import pdf_to_text
+from services.pdf_to_txt import pdf_to_txt
 from storage.file_store import new_resume_id, save_pdf_bytes, save_txt
 from utils.errors import InvalidFileType, PDFParseError
 from utils.logger import get_logger
@@ -33,7 +33,7 @@ async def upload_resume(file: UploadFile = File(...)):
     pdf_path = save_pdf_bytes(resume_id, content)
 
     try:
-        text = pdf_to_text(pdf_path)
+        text = pdf_to_txt(pdf_path)
     except PDFParseError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

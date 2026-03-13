@@ -1,6 +1,7 @@
 import json
 
 import services.extract_service as extract_service
+from schemas.models import ExtractionInput
 
 
 def test_extract_json_from_fenced_block():
@@ -11,7 +12,7 @@ def test_extract_json_from_fenced_block():
 
 
 def test_extract_structured_resume_uses_schema(monkeypatch):
-    def fake_call_llm(prompt: str) -> str:
+    def fake_call_llm(prompt: str, provider=None, model=None) -> str:
         return json.dumps(
             {
                 "name": "Test",
@@ -28,6 +29,14 @@ def test_extract_structured_resume_uses_schema(monkeypatch):
         )
 
     monkeypatch.setattr(extract_service, "call_llm", fake_call_llm)
-    structured = extract_service.extract_structured_resume("whatever")
+    text = (
+        "Education: University. "
+        "Work experience: Internship. "
+        "Skills: Python. "
+        "Projects: something. "
+        "Summary: candidate profile. "
+        "Extra " * 20
+    )
+    structured = extract_service.extract_structured_resume(ExtractionInput(text=text))
     assert structured.name == "Test"
     assert structured.skills == ["Python"]

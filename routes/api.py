@@ -7,8 +7,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from services.extract_service import extract_structured_resume
-# use pdf_service in this repo
-from services.pdf_service import pdf_to_text as pdf_to_txt
+from services.pdf_to_txt import pdf_to_txt
 from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
 from utils.errors import AppError, InvalidFileType, LLMParseError, PDFParseError
 from utils.logger import get_logger
@@ -150,7 +149,10 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
     logger.info("Parsed resume %s to %s", resume_id, txt_path.name)
 
     try:
-        structured = extract_structured_resume(text)
+        from schemas.models import ExtractionInput
+
+        extraction_input = ExtractionInput(text=text, resume_id=resume_id)
+        structured = extract_structured_resume(extraction_input)
     except (LLMParseError, AppError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
