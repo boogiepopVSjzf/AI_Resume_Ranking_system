@@ -39,9 +39,13 @@ def extract_raw_text(pdf_path: Path) -> str:
     # applied automatically when the heuristic detects suspiciously short average line lengths.
     try:
         reader = PdfReader(str(pdf_path))
+        if getattr(reader, "is_encrypted", False):
+            raise PDFParseError("PDF 已加密，无法解析")
         parts = []
         for page in reader.pages:
-            parts.append(page.extract_text() or "")
+            text = page.extract_text() or ""
+            if text:
+                parts.append(text)
         text = "\n".join(parts)
     except FileNotDecryptedError as exc:
         logger.error("Encrypted PDF, skipping: %s", pdf_path.name)
@@ -49,6 +53,8 @@ def extract_raw_text(pdf_path: Path) -> str:
     except PdfReadError as exc:
         logger.error("Corrupted PDF, skipping: %s — %s", pdf_path.name, exc)
         raise CorruptedPDFError(f"PDF is corrupted: {pdf_path.name}") from exc
+    except PDFParseError:
+        raise
     except Exception as exc:
         logger.error("Unexpected parse error, skipping: %s — %s", pdf_path.name, exc)
         raise PDFParseError(f"Failed to parse PDF: {pdf_path.name}") from exc
@@ -82,4 +88,7 @@ def extract_raw_text(pdf_path: Path) -> str:
 def pdf_to_txt(pdf_path: Path) -> str:
     _validate_size(pdf_path)
     raw = extract_raw_text(pdf_path)
-    return clean_text(raw)
+    text = clean_text(raw)
+    if len("".join(text.split())) < settings.MIN_EXTRACTED_TEXT_CHARS:
+        raise PDFParseError("PDF 不包含可提取的文本（疑似图片 PDF）")
+    return text

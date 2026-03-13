@@ -1,87 +1,199 @@
-import json
-from typing import Any, Dict
+from __future__ import annotations
 
 import requests
+from typing import Optional
 
 from config import settings
-from utils.errors import AppError
+from utils.errors import LLMError
 
 
-class LLMError(AppError):
-    pass
+SUPPORTED_PROVIDERS = {"dashscope", "gemini", "openai", "ollama"}
 
 
-def _normalize_url(raw_url: str) -> str:
-    url = raw_url.rstrip("/")
-    if url.endswith("/v1") or url.endswith("/compatible-mode/v1"):
-        return f"{url}/chat/completions"
-    return url
+def _resolve_provider(provider: Optional[str]) -> str:
+    resolved = (provider or settings.DEFAULT_LLM_PROVIDER).lower().strip()
+    if resolved not in SUPPORTED_PROVIDERS:
+        raise LLMError(f"Unsupported provider: {resolved}")
+    return resolved
 
 
-def _is_chat_endpoint(url: str) -> bool:
-    lowered = url.lower()
-    return "chat/completions" in lowered or "compatible-mode" in lowered
+def _resolve_model(provider: str, model: Optional[str]) -> str:
+    if model:
+        return model
+
+    if provider == "dashscope":
+        return settings.LLM_MODEL
+    if provider == "gemini":
+        return settings.GEMINI_MODEL
+    if provider == "openai":
+        return settings.OPENAI_MODEL
+    if provider == "ollama":
+        return settings.OLLAMA_MODEL
+
+    raise LLMError(f"Unsupported provider: {provider}")
 
 
-def _build_payload(prompt: str, url: str) -> Dict[str, Any]:
-    if _is_chat_endpoint(url):
-        payload: Dict[str, Any] = {
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if settings.LLM_MODEL:
-            payload["model"] = settings.LLM_MODEL
-        return payload
-    if settings.LLM_MODEL:
-        return {"model": settings.LLM_MODEL, "prompt": prompt}
-    return {"prompt": prompt}
+def _call_gemini(prompt: str, model: str) -> str:
+    if not settings.GEMINI_API_KEY:
+        raise LLMError("Missing GEMINI_API_KEY")
 
+    url = settings.GEMINI_API_URL_TEMPLATE.format(model=model)
+    url = f"{url}?key={settings.GEMINI_API_KEY}"
 
-def call_llm(prompt: str) -> str:
-    if not settings.LLM_BASE_URL:
-        raise LLMError("未配置 LLM_BASE_URL")
-    if not settings.LLM_API_KEY:
-        raise LLMError("未配置 LLM_API_KEY")
-
-    url = _normalize_url(settings.LLM_BASE_URL)
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
-    headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json",
+        },
+    }
 
     try:
-        resp = requests.post(
+        response = requests.post(
             url,
-            headers=headers,
-            json=_build_payload(prompt, url),
+            headers={"Content-Type": "application/json"},
+            json=payload,
             timeout=settings.LLM_TIMEOUT_SECONDS,
         )
-    except Exception as exc:
-        raise LLMError("LLM 请求失败") from exc
+    except requests.RequestException as exc:
+        raise LLMError(f"Gemini request failed: {exc}") from exc
 
-    if resp.status_code >= 400:
-        detail = resp.text.strip()
-        if detail:
-            raise LLMError(f"LLM 返回错误: {resp.status_code} {detail}")
-        raise LLMError(f"LLM 返回错误: {resp.status_code}")
+    if response.status_code != 200:
+        raise LLMError(f"Gemini API error: {response.status_code} - {response.text}")
+
+    data = response.json()
 
     try:
-        data = resp.json()
-    except Exception:
-        return resp.text
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"Unexpected Gemini response structure: {exc}") from exc
 
-    if isinstance(data, dict):
-        for key in ("text", "content", "output"):
-            if key in data and isinstance(data[key], str):
-                return data[key]
-        for key in ("choices",):
-            if key in data and isinstance(data[key], list) and data[key]:
-                first = data[key][0]
-                if isinstance(first, dict):
-                    if "text" in first and isinstance(first["text"], str):
-                        return first["text"]
-                    msg = first.get("message")
-                    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                        return msg["content"]
-                    delta = first.get("delta")
-                    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                        return delta["content"]
 
-    return json.dumps(data, ensure_ascii=False)
+def _call_openai(prompt: str, model: str) -> str:
+    if not settings.OPENAI_API_KEY:
+        raise LLMError("Missing OPENAI_API_KEY")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1,
+    }
+
+    try:
+        response = requests.post(
+            settings.OPENAI_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"OpenAI request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        raise LLMError(f"OpenAI API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"Unexpected OpenAI response structure: {exc}") from exc
+
+
+def _call_ollama(prompt: str, model: str) -> str:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    try:
+        response = requests.post(
+            settings.OLLAMA_API_URL,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"Ollama request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        raise LLMError(f"Ollama API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+
+    try:
+        return data["response"]
+    except KeyError as exc:
+        raise LLMError(f"Unexpected Ollama response structure: {exc}") from exc
+
+
+def _call_dashscope(prompt: str, model: str) -> str:
+    """Call Aliyun Dashscope API"""
+    if not settings.LLM_API_KEY:
+        raise LLMError("Missing LLM_API_KEY")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1,
+    }
+
+    try:
+        response = requests.post(
+            f"{settings.LLM_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"Dashscope request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        raise LLMError(f"Dashscope API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"Unexpected Dashscope response structure: {exc}") from exc
+
+
+def call_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
+    """
+    Unified LLM entrypoint.
+    This function routes the request to different providers using one interface.
+    """
+    resolved_provider = _resolve_provider(provider)
+    resolved_model = _resolve_model(resolved_provider, model)
+
+    if resolved_provider == "dashscope":
+        return _call_dashscope(prompt, resolved_model)
+    if resolved_provider == "gemini":
+        return _call_gemini(prompt, resolved_model)
+    if resolved_provider == "openai":
+        return _call_openai(prompt, resolved_model)
+    if resolved_provider == "ollama":
+        return _call_ollama(prompt, resolved_model)
+
+    raise LLMError(f"Unsupported provider: {resolved_provider}")
