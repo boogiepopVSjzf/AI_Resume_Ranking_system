@@ -10,38 +10,53 @@ from schemas.models import ExtractionInput, ResumeStructured
 from services.llm_service import call_llm
 from utils.errors import LLMParseError, NotResumeError
 
-RESUME_HINT_KEYWORDS = {
-    "education",
-    "experience",
-    "project",
-    "projects",
-    "skills",
-    "summary",
-    "work experience",
-    "employment",
-    "university",
-    "college",
-    "bachelor",
-    "master",
-    "intern",
-    "research",
-}
-
 
 def _normalize_text(text: str) -> str:
     """Normalize whitespace for downstream checks."""
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _looks_like_resume(text: str) -> bool:
-    """Apply a small heuristic check before calling the LLM."""
-    normalized = _normalize_text(text).lower()
-    if len(normalized) < 80:
+def _build_resume_check_prompt(text: str) -> str:
+    return f"""
+You are a resume classification system.
+
+Decide whether the input text is a resume/CV.
+
+Return JSON only. Do not wrap in markdown.
+
+JSON schema:
+{{
+  "is_resume": boolean
+}}
+
+Text:
+{text}
+""".strip()
+
+
+def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optional[str] = None) -> bool:
+    normalized = _normalize_text(text)
+    if len(normalized) < 40:
         return False
-    hit_count = sum(1 for kw in RESUME_HINT_KEYWORDS if kw in normalized)
-    return hit_count >= 2
 
+    snippet = normalized[:4000]
+    prompt = _build_resume_check_prompt(snippet)
+    raw_output = call_llm(prompt, provider=provider, model=model)
+    parsed = _extract_json(raw_output)
 
+    value = parsed.get("is_resume")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes"}:
+            return True
+        if lowered in {"false", "no"}:
+            return False
+
+    raise LLMParseError("LLM output missing boolean field: is_resume")
+
+#把 LLM 的原始输出里可能被代码块包着的 JSON 提取出来并解析成 dict ，解析不了就抛 LLMParseError 。
 def _extract_json(raw_output: str) -> dict:
     """Extract JSON object from raw LLM output."""
     raw_output = raw_output.strip()
@@ -59,7 +74,7 @@ def _extract_json(raw_output: str) -> dict:
     except json.JSONDecodeError as exc:
         raise LLMParseError("LLM output is not valid JSON") from exc
 
-
+#根据 ResumeStructured 模型的 JSON schema 构建提取提示,要改prompt也是在这里改
 def _build_prompt(text: str) -> str:
     """Build the extraction prompt using the schema contract."""
     schema_dict = ResumeStructured.model_json_schema()
@@ -82,7 +97,7 @@ Resume text:
 {text}
 """.strip()
 
-
+#整合前面的函数来实现从原始文本到结构化简历的提取
 def extract_structured_resume(
     data: ExtractionInput,
     provider: Optional[str] = None,
@@ -94,7 +109,7 @@ def extract_structured_resume(
     if not data.text.strip():
         raise NotResumeError("Input text is empty")
 
-    if not _looks_like_resume(data.text):
+    if not _looks_like_resume(data.text, provider=provider, model=model):
         raise NotResumeError("Input text does not look like a resume")
 
     prompt = _build_prompt(data.text)

@@ -13,6 +13,8 @@ def test_extract_json_from_fenced_block():
 
 def test_extract_structured_resume_uses_schema(monkeypatch):
     def fake_call_llm(prompt: str, provider=None, model=None) -> str:
+        if "resume classification system" in prompt:
+            return json.dumps({"is_resume": True}, ensure_ascii=False)
         return json.dumps(
             {
                 "name": "Test",

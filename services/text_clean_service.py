@@ -1,6 +1,6 @@
 import re
 
-
+#处理空行，使文本更加规整，空白稳定，让后续llm处理不容易呗奇怪字符所干扰
 _SPACE_RE = re.compile(r"[ \t\u00a0\u2000-\u200b]+")
 _BULLET_RE = re.compile(r"^[\s]*[•·●◦▪▫–—\-]+[\s]+", re.MULTILINE)
 _DASHES_RE = re.compile(r"[‐‑‒–—−]")
