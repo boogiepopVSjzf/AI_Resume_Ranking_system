@@ -9,7 +9,16 @@ from config import settings
 from services.extract_service import extract_structured_resume
 from services.pdf_to_txt import pdf_to_txt
 from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
-from utils.errors import AppError, InvalidFileType, LLMParseError, NotResumeError, PDFParseError
+from utils.errors import (
+    AppError,
+    CorruptedPDFError,
+    EncryptedPDFError,
+    FileSizeError,
+    InvalidFileType,
+    LLMParseError,
+    NotResumeError,
+    PDFParseError,
+)
 from utils.logger import get_logger
 
 router = APIRouter()  #创建一个路由容器，后续会把不同接口注册到这个router里面
@@ -84,7 +93,11 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
     pdf_path = save_pdf_bytes(resume_id, content) #保存pdf文件到指定路径
 
     try:
-        text = pdf_to_txt(pdf_path) #调用函数对pdf进行解析，返回解析后的文本
+        text = pdf_to_txt(pdf_path)
+    except FileSizeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (EncryptedPDFError, CorruptedPDFError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except PDFParseError as exc:
         try:
             pdf_path.unlink()
@@ -100,6 +113,86 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
             "resume_id": resume_id,
             "text": text,
             "txt_path": f"storage/txts/{txt_path.name}",
+        }
+    )
+
+
+@router.post("/api/upload/batch")
+async def upload_resume_batch(request: Request, files: list[UploadFile] = File(...)):
+    succeeded = []
+    failed = []
+
+    for file in files:
+        filename = file.filename or "<unknown>"
+
+        if not filename:
+            failed.append({"filename": filename, "reason": "No filename provided"})
+            continue
+
+        ext = Path(filename).suffix.lower()
+        if ext not in settings.ALLOWED_EXTENSIONS:
+            failed.append({"filename": filename, "reason": f"Unsupported file type: {ext}"})
+            continue
+
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                content_length = int(content_length)
+            except ValueError:
+                content_length = None
+
+        try:
+            content = await read_upload_with_limit(
+                file,
+                settings.MAX_UPLOAD_BYTES,
+                content_length,
+            )
+        except HTTPException as exc:
+            logger.error("[BATCH] Skipping %s: HTTP %s — %s", filename, exc.status_code, exc.detail)
+            failed.append({"filename": filename, "reason": exc.detail})
+            continue
+
+        if not content:
+            logger.error("[BATCH] Skipping %s: file content is empty", filename)
+            failed.append({"filename": filename, "reason": "File content is empty"})
+            continue
+
+        resume_id = new_resume_id()
+        pdf_path = save_pdf_bytes(resume_id, content)
+
+        try:
+            text = pdf_to_txt(pdf_path)
+        except (FileSizeError, EncryptedPDFError, CorruptedPDFError, PDFParseError) as exc:
+            logger.error(
+                "[BATCH] Skipping %s: %s: %s",
+                filename,
+                type(exc).__name__,
+                exc,
+            )
+            failed.append({"filename": filename, "reason": str(exc)})
+            continue
+        except Exception as exc:
+            logger.error("[BATCH] Unexpected error for %s: %s", filename, exc)
+            failed.append({"filename": filename, "reason": f"Unexpected error: {exc}"})
+            continue
+
+        txt_path = save_txt(resume_id, text)
+        logger.info("[BATCH] Parsed %s -> resume_id=%s txt=%s", filename, resume_id, txt_path.name)
+        succeeded.append(
+            {
+                "resume_id": resume_id,
+                "filename": filename,
+                "txt_path": f"storage/txts/{txt_path.name}",
+            }
+        )
+
+    return JSONResponse(
+        {
+            "total": len(files),
+            "succeeded_count": len(succeeded),
+            "failed_count": len(failed),
+            "succeeded": succeeded,
+            "failed": failed,
         }
     )
 

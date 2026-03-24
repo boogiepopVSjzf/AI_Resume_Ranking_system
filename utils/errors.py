@@ -18,18 +18,31 @@ class InvalidFileType(AppError):
     """Raised when uploaded file type is not supported."""
     pass
 
+
+class FileSizeError(AppError):
+    """File is outside the accepted size range (too small or too large)."""
+    pass
+
+
 class PDFParseError(AppError):
     """Raised when PDF parsing fails."""
     pass
 
-class LLMParseError(AppError):
-    """Raised when LLM response cannot be parsed or validated."""
-    # 对应 llm_service.py 中：raise LLMParseError("Invalid LLM API response format")
+
+class EncryptedPDFError(PDFParseError):
+    """PDF is password-protected and cannot be read."""
     pass
 
-class NotResumeError(AppError):
-    """Raised when input text does not look like a resume."""
+
+class CorruptedPDFError(PDFParseError):
+    """PDF structure is damaged or invalid and cannot be parsed."""
     pass
+
+
+class LLMParseError(AppError):
+    """Raised when LLM response cannot be parsed or validated."""
+    pass
+
 
 class NotResumeError(AppError):
     """Raised when input text does not look like a resume."""
