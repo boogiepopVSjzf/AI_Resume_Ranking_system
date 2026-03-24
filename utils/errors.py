@@ -24,8 +24,13 @@ class FileSizeError(AppError):
     pass
 
 
-class PDFParseError(AppError):
-    """Raised when PDF parsing fails."""
+class DocumentExtractError(AppError):
+    """Raised when text cannot be extracted from an uploaded document (non-PDF-specific)."""
+    pass
+
+
+class PDFParseError(DocumentExtractError):
+    """Raised when PDF parsing or text extraction fails."""
     pass
 
 

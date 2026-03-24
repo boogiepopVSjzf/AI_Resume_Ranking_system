@@ -6,18 +6,19 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from config import settings
+from services.document_validate import allowed_types_hint, validate_upload_magic
+from services.document_to_txt import document_to_txt
 from services.extract_service import extract_structured_resume
-from services.pdf_to_txt import pdf_to_txt
-from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
+from storage.file_store import new_resume_id, save_upload_bytes, save_result_json, save_txt
 from utils.errors import (
     AppError,
     CorruptedPDFError,
+    DocumentExtractError,
     EncryptedPDFError,
     FileSizeError,
     InvalidFileType,
     LLMParseError,
     NotResumeError,
-    PDFParseError,
 )
 from utils.logger import get_logger
 
@@ -67,8 +68,8 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="文件名过长")
 
     ext = Path(file.filename).suffix.lower()
-    if ext not in settings.ALLOWED_EXTENSIONS: #文件类型不支持，就拒绝
-        raise InvalidFileType("仅支持 PDF 文件")
+    if ext not in settings.ALLOWED_EXTENSIONS:
+        raise InvalidFileType(f"仅支持 {allowed_types_hint()} 文件")
 
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -85,22 +86,21 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
 
-    if not content[:1024].lstrip().startswith(b"%PDF-"): #防止伪装pdf文件
-        raise InvalidFileType("仅支持 PDF 文件")
+    validate_upload_magic(ext, content)
 
-    resume_id = new_resume_id() #生成一个新的resume_id
+    resume_id = new_resume_id()
     logger.info("Uploaded resume %s", resume_id)
-    pdf_path = save_pdf_bytes(resume_id, content) #保存pdf文件到指定路径
+    upload_path = save_upload_bytes(resume_id, ext, content)
 
     try:
-        text = pdf_to_txt(pdf_path)
+        text = document_to_txt(upload_path)
     except FileSizeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (EncryptedPDFError, CorruptedPDFError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except PDFParseError as exc:
+    except DocumentExtractError as exc:
         try:
-            pdf_path.unlink()
+            upload_path.unlink()
         except Exception:
             pass
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -157,18 +157,45 @@ async def upload_resume_batch(request: Request, files: list[UploadFile] = File(.
             failed.append({"filename": filename, "reason": "File content is empty"})
             continue
 
+        try:
+            validate_upload_magic(ext, content)
+        except InvalidFileType as exc:
+            failed.append({"filename": filename, "reason": str(exc)})
+            continue
+
         resume_id = new_resume_id()
-        pdf_path = save_pdf_bytes(resume_id, content)
+        upload_path = save_upload_bytes(resume_id, ext, content)
 
         try:
-            text = pdf_to_txt(pdf_path)
-        except (FileSizeError, EncryptedPDFError, CorruptedPDFError, PDFParseError) as exc:
+            text = document_to_txt(upload_path)
+        except FileSizeError as exc:
+            logger.error("[BATCH] Skipping %s: %s: %s", filename, type(exc).__name__, exc)
+            try:
+                upload_path.unlink()
+            except Exception:
+                pass
+            failed.append({"filename": filename, "reason": str(exc)})
+            continue
+        except (EncryptedPDFError, CorruptedPDFError) as exc:
             logger.error(
                 "[BATCH] Skipping %s: %s: %s",
                 filename,
                 type(exc).__name__,
                 exc,
             )
+            failed.append({"filename": filename, "reason": str(exc)})
+            continue
+        except DocumentExtractError as exc:
+            logger.error(
+                "[BATCH] Skipping %s: %s: %s",
+                filename,
+                type(exc).__name__,
+                exc,
+            )
+            try:
+                upload_path.unlink()
+            except Exception:
+                pass
             failed.append({"filename": filename, "reason": str(exc)})
             continue
         except Exception as exc:
@@ -207,7 +234,7 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
 
     ext = Path(file.filename).suffix.lower()
     if ext not in settings.ALLOWED_EXTENSIONS:
-        raise InvalidFileType("仅支持 PDF 文件")
+        raise InvalidFileType(f"仅支持 {allowed_types_hint()} 文件")
 
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -224,17 +251,22 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
 
-    if not content[:1024].lstrip().startswith(b"%PDF-"):
-        raise InvalidFileType("仅支持 PDF 文件")
+    validate_upload_magic(ext, content)
 
     resume_id = new_resume_id()
-    pdf_path = save_pdf_bytes(resume_id, content)
+    upload_path = save_upload_bytes(resume_id, ext, content)
 
     try:
-        text = pdf_to_txt(pdf_path)
-    except PDFParseError as exc:
+        text = document_to_txt(upload_path)
+    except FileSizeError as exc:
         try:
-            pdf_path.unlink()
+            upload_path.unlink()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (EncryptedPDFError, CorruptedPDFError, DocumentExtractError) as exc:
+        try:
+            upload_path.unlink()
         except Exception:
             pass
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -246,7 +278,7 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
         structured = extract_structured_resume(extraction_input)
     except NotResumeError as exc:
         try:
-            pdf_path.unlink()
+            upload_path.unlink()
         except Exception:
             pass
         raise HTTPException(status_code=422, detail=str(exc)) from exc
