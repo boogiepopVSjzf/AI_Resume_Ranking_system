@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from typing import List, Optional
-
 from pydantic import BaseModel, Field
 
-
+#定义输出json结构，包括教育经历、工作经历、项目经历、技能、摘要、姓名、邮箱、手机号、工作经历、最高学历、位置
 class EducationItem(BaseModel):
     school: Optional[str] = None
     degree: Optional[str] = None
@@ -43,3 +42,7 @@ class ResumeStructured(BaseModel):
     education: List[EducationItem] = Field(default_factory=list)
     experience: List[ExperienceItem] = Field(default_factory=list)
     projects: List[ProjectItem] = Field(default_factory=list)
+
+class ExtractionInput(BaseModel):
+    resume_id: Optional[str] = None
+    text: str

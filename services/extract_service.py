@@ -1,99 +1,124 @@
+from __future__ import annotations
+
 import json
 import re
-from typing import Any, Dict
+from typing import Optional
 
-from schemas.models import ResumeStructured
+from pydantic import ValidationError
+
+from schemas.models import ExtractionInput, ResumeStructured
 from services.llm_service import call_llm
-from utils.errors import LLMParseError
+from utils.errors import LLMParseError, NotResumeError
 
 
-def _schema_hint_from_model() -> Dict[str, Any]:
-    schema = ResumeStructured.model_json_schema()
-    defs = schema.get("$defs", {})
-
-    def resolve_ref(ref: str) -> Dict[str, Any]:
-        if ref.startswith("#/$defs/"):
-            key = ref.split("/")[-1]
-            return defs.get(key, {})
-        return {}
-
-    def map_simple(type_name: str, optional: bool) -> str:
-        if optional:
-            return f"{type_name} or null"
-        return type_name
-
-    def build(node: Any) -> Any:
-        if not isinstance(node, dict):
-            return "string"
-        if "$ref" in node:
-            return build(resolve_ref(node["$ref"]))
-        if "anyOf" in node:
-            any_of = node.get("anyOf") or []
-            non_null = [
-                item
-                for item in any_of
-                if not (isinstance(item, dict) and item.get("type") == "null")
-            ]
-            optional = len(non_null) != len(any_of)
-            if not non_null:
-                return "string or null"
-            built = build(non_null[0])
-            if isinstance(built, str):
-                return map_simple(built.replace(" or null", ""), optional)
-            return built
-        node_type = node.get("type")
-        if node_type == "object":
-            props = node.get("properties") or {}
-            return {key: build(val) for key, val in props.items()}
-        if node_type == "array":
-            items = node.get("items") or {}
-            return [build(items)]
-        if isinstance(node_type, list):
-            optional = "null" in node_type
-            non_null = [t for t in node_type if t != "null"]
-            base = non_null[0] if non_null else "string"
-            return map_simple(base, optional)
-        if node_type == "string":
-            return "string"
-        if node_type == "integer":
-            return "integer"
-        if node_type == "number":
-            return "number"
-        if node_type == "boolean":
-            return "boolean"
-        return "string"
-
-    return build(schema)
+def _normalize_text(text: str) -> str:
+    """Normalize whitespace for downstream checks."""
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def build_prompt(text: str) -> str:
-    schema_hint = _schema_hint_from_model()
-    return (
-        "你是一个简历解析器。请把输入简历文本转换为JSON。"
-        "只输出JSON，不要解释。字段必须匹配以下结构：\n"
-        f"{json.dumps(schema_hint, ensure_ascii=False)}\n\n简历文本：\n{text}"
-    )
+def _build_resume_check_prompt(text: str) -> str:
+    return f"""
+You are a resume classification system.
+
+Decide whether the input text is a resume/CV.
+
+Return JSON only. Do not wrap in markdown.
+
+JSON schema:
+{{
+  "is_resume": boolean
+}}
+
+Text:
+{text}
+""".strip()
 
 
-def _extract_json(text: str) -> Dict[str, Any]:
+def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optional[str] = None) -> bool:
+    normalized = _normalize_text(text)
+    if len(normalized) < 40:
+        return False
+
+    snippet = normalized[:4000]
+    prompt = _build_resume_check_prompt(snippet)
+    raw_output = call_llm(prompt, provider=provider, model=model)
+    parsed = _extract_json(raw_output)
+
+    value = parsed.get("is_resume")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes"}:
+            return True
+        if lowered in {"false", "no"}:
+            return False
+
+    raise LLMParseError("LLM output missing boolean field: is_resume")
+
+#把 LLM 的原始输出里可能被代码块包着的 JSON 提取出来并解析成 dict ，解析不了就抛 LLMParseError 。
+def _extract_json(raw_output: str) -> dict:
+    """Extract JSON object from raw LLM output."""
+    raw_output = raw_output.strip()
+
+    fenced_match = re.search(r"```json\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
+    if fenced_match:
+        raw_output = fenced_match.group(1).strip()
+
+    generic_match = re.search(r"```\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
+    if generic_match:
+        raw_output = generic_match.group(1).strip()
+
     try:
-        return json.loads(text)
-    except Exception:
-        pass
+        return json.loads(raw_output)
+    except json.JSONDecodeError as exc:
+        raise LLMParseError("LLM output is not valid JSON") from exc
 
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
-    if fenced:
-        return json.loads(fenced.group(1))
+#根据 ResumeStructured 模型的 JSON schema 构建提取提示,要改prompt也是在这里改
+def _build_prompt(text: str) -> str:
+    """Build the extraction prompt using the schema contract."""
+    schema_dict = ResumeStructured.model_json_schema()
 
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return json.loads(match.group(0))
+    return f"""
+You are a resume information extraction system.
 
-    raise LLMParseError("LLM 输出不是有效 JSON")
+Extract structured resume information from the input text.
 
+Rules:
+1. Return JSON only.
+2. Do not wrap the JSON in markdown.
+3. Do not invent information that is not explicitly supported by the text.
+4. If a field is missing, use null for scalar fields and [] for list fields.
+5. Follow this JSON schema exactly:
 
-def extract_structured_resume(text: str) -> ResumeStructured:
-    prompt = build_prompt(text)
-    raw = call_llm(prompt)
-    data = _extract_json(raw)
-    return ResumeStructured.model_validate(data)
+{json.dumps(schema_dict, ensure_ascii=False, indent=2)}
+
+Resume text:
+{text}
+""".strip()
+
+#整合前面的函数来实现从原始文本到结构化简历的提取
+def extract_structured_resume(
+    data: ExtractionInput,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> ResumeStructured:
+    """
+    Convert raw resume text into a validated ResumeStructured object.
+    """
+    if not data.text.strip():
+        raise NotResumeError("Input text is empty")
+
+    if not _looks_like_resume(data.text, provider=provider, model=model):
+        raise NotResumeError("Input text does not look like a resume")
+
+    prompt = _build_prompt(data.text)
+    raw_output = call_llm(prompt, provider=provider, model=model)
+    parsed = _extract_json(raw_output)
+
+    try:
+        return ResumeStructured.model_validate(parsed)
+    except ValidationError as exc:
+        raise LLMParseError(
+            f"LLM output does not match ResumeStructured schema: {exc}"
+        ) from exc

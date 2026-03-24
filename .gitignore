@@ -1,0 +1,17 @@
+# 忽略虚拟环境
+.venv/
+venv/
+ENV/
+
+# 忽略 Python 缓存
+__pycache__/
+*.py[cod]
+
+# 忽略环境变量 (保护你的 API Keys)
+.env
+
+# 忽略系统文件
+.DS_Store
+
+# 忽略运行时生成的文件
+storage/
