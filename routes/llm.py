@@ -9,7 +9,7 @@ from utils.errors import LLMError
 routes = APIRouter(prefix="/api/llm", tags=["llm"])
 
 
-@routes.post("/generate")
+@routes.post("/generate")  #测试llm接口是否正常
 async def generate_with_unified_llm(payload: LLMGenerateRequest):
     """
     Unified API endpoint for calling different models.

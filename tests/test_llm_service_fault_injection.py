@@ -28,9 +28,10 @@ def patch_settings(monkeypatch):
     """
     from config import settings
 
-    monkeypatch.setattr(settings, "LLM_API_URL", "http://localhost:11434/v1/chat/completions")
-    monkeypatch.setattr(settings, "LLM_API_KEY", "dummy-key")
-    monkeypatch.setattr(settings, "LLM_MODEL", "dummy-model")
+    monkeypatch.setattr(settings, "DEFAULT_LLM_PROVIDER", "openai")
+    monkeypatch.setattr(settings, "OPENAI_API_URL", "http://localhost:11434/v1/chat/completions")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "dummy-key")
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "dummy-model")
     monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 5)
     return settings
 
@@ -44,7 +45,7 @@ def test_happy_path_and_payload_verification(patch_settings):
     Happy Path: Ensure the service returns the correct text and verify that 
     the exact expected payload and headers were sent to the external API.
     """
-    mock_url = patch_settings.LLM_API_URL
+    mock_url = patch_settings.OPENAI_API_URL
     
     # Mock the successful HTTP 200 response
     responses.add(
@@ -55,7 +56,7 @@ def test_happy_path_and_payload_verification(patch_settings):
     )
 
     prompt_text = "Extract the candidate name."
-    output = call_llm(prompt_text)
+    output = call_llm(prompt_text, provider="openai")
 
     # Verify output
     assert output == "Perfectly parsed JSON"
@@ -65,12 +66,12 @@ def test_happy_path_and_payload_verification(patch_settings):
     
     # Verify the Request Payload (Crucial for ensuring the right model/prompt is used)
     request_body = json.loads(responses.calls[0].request.body)
-    assert request_body["model"] == patch_settings.LLM_MODEL
+    assert request_body["model"] == patch_settings.OPENAI_MODEL
     assert request_body["messages"][0]["content"] == prompt_text
     
     # Verify Authentication Headers
     request_headers = responses.calls[0].request.headers
-    assert request_headers["Authorization"] == f"Bearer {patch_settings.LLM_API_KEY}"
+    assert request_headers["Authorization"] == f"Bearer {patch_settings.OPENAI_API_KEY}"
 
 # ==============================================================================
 # 2. Edge Cases (LLM Hallucinations & Truncations)
@@ -87,12 +88,12 @@ def test_edge_case_markdown_wrapped_json(patch_settings):
     
     responses.add(
         responses.POST,
-        patch_settings.LLM_API_URL,
+        patch_settings.OPENAI_API_URL,
         json={"choices": [{"message": {"content": chatty_content}}]},
         status=200
     )
 
-    output = call_llm("Parse this")
+    output = call_llm("Parse this", provider="openai")
     
     # If your call_llm has built-in regex cleaning, assert it equals {"name": "John"}.
     # Otherwise, assert it accurately returns the raw string without crashing.
@@ -109,7 +110,7 @@ def test_edge_case_max_tokens_truncated_response(patch_settings):
     
     responses.add(
         responses.POST,
-        patch_settings.LLM_API_URL,
+        patch_settings.OPENAI_API_URL,
         json={
             "choices": [{
                 "message": {"content": truncated_content},
@@ -119,7 +120,7 @@ def test_edge_case_max_tokens_truncated_response(patch_settings):
         status=200
     )
 
-    output = call_llm("Parse this")
+    output = call_llm("Parse this", provider="openai")
     
     # The system should not crash; it should return the truncated string.
     # The upstream schema validation (e.g., Pydantic) will catch the structural error.
@@ -137,16 +138,15 @@ def test_negative_path_rate_limiting_429(patch_settings):
     """
     responses.add(
         responses.POST,
-        patch_settings.LLM_API_URL,
+        patch_settings.OPENAI_API_URL,
         json={"error": {"message": "Rate limit exceeded"}},
         status=429
     )
 
     with pytest.raises(LLMError) as exc_info:
-        call_llm("hello")
+        call_llm("hello", provider="openai")
         
     assert "429" in str(exc_info.value)
-    # The detail from the API should ideally be captured in the exception
     assert "Rate limit exceeded" in str(exc_info.value)
 
 @responses.activate
@@ -158,14 +158,15 @@ def test_negative_path_network_timeout(patch_settings):
     # Simulate a requests.exceptions.Timeout being raised during the POST call
     responses.add(
         responses.POST,
-        patch_settings.LLM_API_URL,
+        patch_settings.OPENAI_API_URL,
         body=requests.exceptions.Timeout("Connection timed out")
     )
 
     with pytest.raises(LLMError) as exc_info:
-        call_llm("hello")
+        call_llm("hello", provider="openai")
         
-    assert "API takes too long to respond" in str(exc_info.value)
+    assert "OpenAI request failed" in str(exc_info.value)
+    assert "timed out" in str(exc_info.value).lower()
 
 @responses.activate
 def test_negative_path_server_downtime_500(patch_settings):
@@ -174,13 +175,13 @@ def test_negative_path_server_downtime_500(patch_settings):
     """
     responses.add(
         responses.POST,
-        patch_settings.LLM_API_URL,
+        patch_settings.OPENAI_API_URL,
         body="Internal Server Error",
         status=500
     )
 
     with pytest.raises(LLMError) as exc_info:
-        call_llm("hello")
+        call_llm("hello", provider="openai")
         
     assert "500" in str(exc_info.value)
 
@@ -190,9 +191,10 @@ def test_negative_missing_api_url_config(monkeypatch):
     configuration is completely missing.
     """
     from config import settings
-    monkeypatch.setattr(settings, "LLM_API_URL", "")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "dummy-key")
+    monkeypatch.setattr(settings, "OPENAI_API_URL", "")
     
     with pytest.raises(LLMError) as exc_info:
-        call_llm("hello")
+        call_llm("hello", provider="openai")
         
-    assert " configuration is completely missing" in str(exc_info.value)
+    assert "OpenAI request failed" in str(exc_info.value)
