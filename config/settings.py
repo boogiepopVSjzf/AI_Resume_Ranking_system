@@ -11,11 +11,11 @@ if env_path.exists():
     load_dotenv(dotenv_path=env_path)
 
 STORAGE_DIR = BASE_DIR / "storage"
-PDF_DIR = STORAGE_DIR / "pdfs"
+UPLOAD_DIR = STORAGE_DIR / "uploads"
 TXT_DIR = STORAGE_DIR / "txts"
 RESULTS_DIR = STORAGE_DIR / "results"
 
-ALLOWED_EXTENSIONS = {".pdf"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 MAX_UPLOAD_MB = 20
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 MIN_UPLOAD_BYTES = 1 * 1024  # 1 KB — files smaller than this are considered invalid

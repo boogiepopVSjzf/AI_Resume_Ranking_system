@@ -3,9 +3,9 @@ from pathlib import Path
 from pypdf import PdfReader
 from pypdf.errors import FileNotDecryptedError, PdfReadError
 
-from config import settings
-from services.text_clean_service import clean_text
-from utils.errors import CorruptedPDFError, EncryptedPDFError, FileSizeError, PDFParseError
+from services.document_validate import validate_file_size
+from services.text_clean_service import finalize_extracted_plaintext
+from utils.errors import CorruptedPDFError, EncryptedPDFError, PDFParseError
 from utils.logger import get_logger
 
 logger = get_logger("pdf_to_txt")
@@ -15,16 +15,6 @@ logger = get_logger("pdf_to_txt")
 # at least this many lines, the text is likely column-scrambled.
 _MULTICOLUMN_AVG_LINE_LEN = 40
 _MULTICOLUMN_MIN_LINES = 20
-
-
-def _validate_size(pdf_path: Path) -> None:
-    size = pdf_path.stat().st_size
-    if size < settings.MIN_UPLOAD_BYTES:
-        logger.warning("File too small, skipping: %s (%d bytes)", pdf_path.name, size)
-        raise FileSizeError(f"File too small: {pdf_path.name} ({size} bytes)")
-    if size > settings.MAX_UPLOAD_BYTES:
-        logger.warning("File too large, skipping: %s (%d bytes)", pdf_path.name, size)
-        raise FileSizeError(f"File too large: {pdf_path.name} ({size} bytes)")
 
 
 def _looks_multicolumn(text: str) -> bool:
@@ -85,12 +75,10 @@ def extract_raw_text(pdf_path: Path) -> str:
     return text
 
 
-def pdf_to_txt(pdf_path: Path) -> str:
-    _validate_size(pdf_path)
+def pdf_to_txt(pdf_path: Path, *, skip_size_check: bool = False) -> str:
+    if not skip_size_check:
+        validate_file_size(pdf_path)
     raw = extract_raw_text(pdf_path)
-    text = clean_text(raw)
-    if len("".join(text.split())) < settings.MIN_EXTRACTED_TEXT_CHARS:
-        raise PDFParseError("PDF 不包含可提取的文本（疑似图片 PDF）")
-    return text
+    return finalize_extracted_plaintext(raw, source="pdf")
 #之前在测试的时候，会出现读一个pdf生成的txt只有一行但是特别长的情况，这是由于pdf文件的格式导致的
 #其实这无伤大雅，只需要最后llm能正常提取这些txt并且把它们转换成对应的json 结构化数据即可
