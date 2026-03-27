@@ -2,6 +2,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+from utils.constants import (
+    ALLOWED_EXTENSIONS,
+    MAX_UPLOAD_MB,
+    MAX_UPLOAD_BYTES,
+    MIN_UPLOAD_BYTES,
+    MAX_FILENAME_LENGTH,
+    MIN_EXTRACTED_TEXT_CHARS,
+)
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -14,13 +23,6 @@ STORAGE_DIR = BASE_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 TXT_DIR = STORAGE_DIR / "txts"
 RESULTS_DIR = STORAGE_DIR / "results"
-
-ALLOWED_EXTENSIONS = {".pdf", ".docx"}
-MAX_UPLOAD_MB = 20
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MIN_UPLOAD_BYTES = 1 * 1024  # 1 KB — files smaller than this are considered invalid
-MAX_FILENAME_LENGTH = 128
-MIN_EXTRACTED_TEXT_CHARS = 30
 
 # Primary LLM: Aliyun Dashscope (for feature_jzf compatibility)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")

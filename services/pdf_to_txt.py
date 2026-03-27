@@ -5,23 +5,18 @@ from pypdf.errors import FileNotDecryptedError, PdfReadError
 
 from services.document_validate import validate_file_size
 from services.text_clean_service import finalize_extracted_plaintext
+from utils.constants import MULTICOLUMN_AVG_LINE_LEN, MULTICOLUMN_MIN_LINES
 from utils.errors import CorruptedPDFError, EncryptedPDFError, PDFParseError
 from utils.logger import get_logger
 
 logger = get_logger("pdf_to_txt")
 
-# Heuristic thresholds for detecting multi-column layout:
-# if the average non-empty line length is below this value AND there are
-# at least this many lines, the text is likely column-scrambled.
-_MULTICOLUMN_AVG_LINE_LEN = 40
-_MULTICOLUMN_MIN_LINES = 20
-
 
 def _looks_multicolumn(text: str) -> bool:
     lines = [line for line in text.splitlines() if line.strip()]
-    if len(lines) < _MULTICOLUMN_MIN_LINES:
+    if len(lines) < MULTICOLUMN_MIN_LINES:
         return False
-    return (sum(len(line) for line in lines) / len(lines)) < _MULTICOLUMN_AVG_LINE_LEN
+    return (sum(len(line) for line in lines) / len(lines)) < MULTICOLUMN_AVG_LINE_LEN
 
 
 def extract_raw_text(pdf_path: Path) -> str:
@@ -75,7 +70,7 @@ def extract_raw_text(pdf_path: Path) -> str:
     return text
 
 
-def pdf_to_txt(pdf_path: Path, *, skip_size_check: bool = False) -> str:
+def extract_text_from_pdf(pdf_path: Path, *, skip_size_check: bool = False) -> str:
     if not skip_size_check:
         validate_file_size(pdf_path)
     raw = extract_raw_text(pdf_path)
