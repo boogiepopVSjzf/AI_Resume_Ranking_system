@@ -13,6 +13,7 @@ from services.upload_service import (
     validate_filename,
 )
 from storage.file_store import save_result_json
+from storage.db_store import save_parsed_resume
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
     ERR_FILE_CONTENT_EMPTY,
@@ -182,6 +183,12 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
 
     json_text = structured.model_dump_json(ensure_ascii=False)
     save_result_json(result.resume_id, json_text)
+
+    try:
+        save_parsed_resume(result.resume_id, structured)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"数据库保存失败: {exc}") from exc
+
     logger.info("Parsed resume %s", result.resume_id)
 
     return JSONResponse({
@@ -207,5 +214,9 @@ async def extract_resume(payload: dict):
     json_text = structured.model_dump_json(ensure_ascii=False)
     if resume_id:
         save_result_json(resume_id, json_text)
+        try:
+            save_parsed_resume(resume_id, structured)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"数据库保存失败: {exc}") from exc
 
     return JSONResponse(json.loads(json_text))
