@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -7,183 +6,206 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from services.extract_service import extract_structured_resume
-# use pdf_service in this repo
-from services.pdf_service import pdf_to_text as pdf_to_txt
-from storage.file_store import new_resume_id, save_pdf_bytes, save_result_json, save_txt
-from utils.errors import AppError, InvalidFileType, LLMParseError, PDFParseError
+from services.upload_service import (
+    process_single_file_in_batch,
+    process_upload,
+    validate_batch_file,
+    validate_filename,
+)
+from storage.file_store import save_result_json
+from utils.constants import (
+    DEFAULT_CHUNK_SIZE,
+    ERR_FILE_CONTENT_EMPTY,
+    ERR_FILE_EMPTY,
+    ERR_FILE_TOO_LARGE,
+    HTTP_400_BAD_REQUEST,
+    HTTP_413_PAYLOAD_TOO_LARGE,
+    HTTP_422_UNPROCESSABLE_ENTITY,
+    HTTP_502_BAD_GATEWAY,
+    MAX_BATCH_SIZE,
+)
+from utils.errors import (
+    AppError,
+    CorruptedPDFError,
+    DocumentExtractError,
+    EncryptedPDFError,
+    FileSizeError,
+    InvalidFileType,
+    LLMParseError,
+    NotResumeError,
+)
 from utils.logger import get_logger
+from schemas.models import ExtractionInput
 
 router = APIRouter()
 logger = get_logger("api")
 
+# Exception to HTTP status code mapping
+_EXCEPTION_STATUS_MAP = {
+    InvalidFileType: HTTP_400_BAD_REQUEST,
+    FileSizeError: HTTP_400_BAD_REQUEST,
+    EncryptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
+    CorruptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
+    DocumentExtractError: HTTP_422_UNPROCESSABLE_ENTITY,
+    NotResumeError: HTTP_422_UNPROCESSABLE_ENTITY,
+    LLMParseError: HTTP_502_BAD_GATEWAY,
+    AppError: HTTP_502_BAD_GATEWAY,
+}
 
-async def read_upload_with_limit(
-    file: UploadFile,
-    max_bytes: int,
-    content_length: Optional[int],
-    chunk_size: int = 1024 * 1024,
-) -> bytes:
-    if content_length is not None and content_length > max_bytes:
-        raise HTTPException(status_code=413, detail="文件过大")
+
+def _raise_http_exception(exc: Exception) -> None:
+    """Convert application exception to HTTPException."""
+    for exc_type, status_code in _EXCEPTION_STATUS_MAP.items():
+        if isinstance(exc, exc_type):
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+async def _read_upload_content(file: UploadFile, content_length: Optional[int]) -> bytes:
+    """Read and validate upload file content."""
+    if content_length is not None and content_length > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=HTTP_413_PAYLOAD_TOO_LARGE, detail=ERR_FILE_TOO_LARGE)
 
     data = bytearray()
     total = 0
     while True:
-        chunk = await file.read(chunk_size)
+        chunk = await file.read(DEFAULT_CHUNK_SIZE)
         if not chunk:
             break
         total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(status_code=413, detail="文件过大")
+        if total > settings.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=HTTP_413_PAYLOAD_TOO_LARGE, detail=ERR_FILE_TOO_LARGE)
         data.extend(chunk)
+    
+    if not data:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=ERR_FILE_EMPTY)
     return bytes(data)
+
+
+def _get_content_length(request: Request) -> Optional[int]:
+    """Extract content-length header as int, or None if invalid."""
+    val = request.headers.get("content-length")
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_structured(text: str, resume_id: Optional[str]):
+    """Call LLM extract service."""
+    return extract_structured_resume(ExtractionInput(text=text, resume_id=resume_id))
 
 
 @router.get("/")
 def index():
-    return JSONResponse(
-        {
-            "message": "ok",
-            "docs": "/docs",
-            "endpoints": ["/api/upload", "/api/extract", "/api/parse"],
-        }
-    )
+    """Health check and API navigation."""
+    return JSONResponse({
+        "message": "ok",
+        "docs": "/docs",
+        "endpoints": ["/api/upload", "/api/extract", "/api/parse"],
+    })
 
 
 @router.post("/api/upload")
 async def upload_resume(request: Request, file: UploadFile = File(...)):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="未选择文件")
-
-    if len(file.filename) > settings.MAX_FILENAME_LENGTH:
-        raise HTTPException(status_code=400, detail="文件名过长")
-
-    ext = Path(file.filename).suffix.lower()
-    if ext not in settings.ALLOWED_EXTENSIONS:
-        raise InvalidFileType("仅支持 PDF 文件")
-
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            content_length = int(content_length)
-        except ValueError:
-            content_length = None
-
-    content = await read_upload_with_limit(
-        file,
-        settings.MAX_UPLOAD_BYTES,
-        content_length,
-    )
-    if not content:
-        raise HTTPException(status_code=400, detail="文件内容为空")
-
-    if not content[:1024].lstrip().startswith(b"%PDF-"):
-        raise InvalidFileType("仅支持 PDF 文件")
-
-    resume_id = new_resume_id()
-    pdf_path = save_pdf_bytes(resume_id, content)
-
+    """Upload and convert a resume file to text."""
     try:
-        text = pdf_to_txt(pdf_path)
-    except PDFParseError as exc:
+        ext = validate_filename(file.filename)
+        content = await _read_upload_content(file, _get_content_length(request))
+        result = process_upload(ext, content)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    logger.info("Uploaded resume %s", result.resume_id)
+    return JSONResponse({
+        "resume_id": result.resume_id,
+        "text": result.text,
+        "txt_path": result.txt_path,
+    })
+
+
+@router.post("/api/upload/batch")
+async def upload_resume_batch(request: Request, files: list[UploadFile] = File(...)):
+    """Batch upload and convert multiple resume files."""
+    if len(files) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"批量上传最多支持 {MAX_BATCH_SIZE} 个文件，当前 {len(files)} 个"
+        )
+
+    succeeded, failed = [], []
+
+    for file in files:
+        ext, filename, failure = validate_batch_file(file.filename)
+        if failure:
+            failed.append(failure)
+            continue
+
         try:
-            pdf_path.unlink()
-        except Exception:
-            pass
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+            content = await _read_upload_content(file, None)
+        except HTTPException as exc:
+            logger.error("[BATCH] Skipping %s: %s", filename, exc.detail)
+            failed.append({"filename": filename, "reason": exc.detail})
+            continue
 
-    txt_path = save_txt(resume_id, text)
-    logger.info("Parsed resume %s to %s", resume_id, txt_path.name)
+        success, failure = process_single_file_in_batch(filename, ext, content)
+        if success:
+            succeeded.append(success)
+        if failure:
+            failed.append(failure)
 
-    return JSONResponse(
-        {
-            "resume_id": resume_id,
-            "text": text,
-            "txt_path": f"storage/txts/{txt_path.name}",
-        }
-    )
+    return JSONResponse({
+        "total": len(files),
+        "succeeded_count": len(succeeded),
+        "failed_count": len(failed),
+        "succeeded": succeeded,
+        "failed": failed,
+    })
 
 
 @router.post("/api/parse")
 async def parse_resume(request: Request, file: UploadFile = File(...)):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="未选择文件")
-
-    if len(file.filename) > settings.MAX_FILENAME_LENGTH:
-        raise HTTPException(status_code=400, detail="文件名过长")
-
-    ext = Path(file.filename).suffix.lower()
-    if ext not in settings.ALLOWED_EXTENSIONS:
-        raise InvalidFileType("仅支持 PDF 文件")
-
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            content_length = int(content_length)
-        except ValueError:
-            content_length = None
-
-    content = await read_upload_with_limit(
-        file,
-        settings.MAX_UPLOAD_BYTES,
-        content_length,
-    )
-    if not content:
-        raise HTTPException(status_code=400, detail="文件内容为空")
-
-    if not content[:1024].lstrip().startswith(b"%PDF-"):
-        raise InvalidFileType("仅支持 PDF 文件")
-
-    resume_id = new_resume_id()
-    pdf_path = save_pdf_bytes(resume_id, content)
-
+    """Upload, convert to text, and extract structured data from a resume."""
     try:
-        text = pdf_to_txt(pdf_path)
-    except PDFParseError as exc:
-        try:
-            pdf_path.unlink()
-        except Exception:
-            pass
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    txt_path = save_txt(resume_id, text)
-    logger.info("Parsed resume %s to %s", resume_id, txt_path.name)
-
-    try:
-        structured = extract_structured_resume(text)
-    except (LLMParseError, AppError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        ext = validate_filename(file.filename)
+        content = await _read_upload_content(file, _get_content_length(request))
+        result = process_upload(ext, content)
+        structured = _extract_structured(result.text, result.resume_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_http_exception(exc)
 
     json_text = structured.model_dump_json(ensure_ascii=False)
-    save_result_json(resume_id, json_text)
+    save_result_json(result.resume_id, json_text)
+    logger.info("Parsed resume %s", result.resume_id)
 
-    return JSONResponse(
-        {
-            "resume_id": resume_id,
-            "result": json.loads(json_text),
-        }
-    )
+    return JSONResponse({
+        "resume_id": result.resume_id,
+        "result": json.loads(json_text),
+    })
 
 
 @router.post("/api/extract")
 async def extract_resume(payload: dict):
-    resume_id = payload.get("resume_id")
+    """Extract structured data from resume text."""
     text = payload.get("text")
+    resume_id = payload.get("resume_id") if isinstance(payload.get("resume_id"), str) else None
 
     if not isinstance(text, str) or not text.strip():
-        raise HTTPException(status_code=400, detail="text 不能为空")
-
-    from schemas.models import ExtractionInput
-
-    extraction_input = ExtractionInput(text=text, resume_id=resume_id if isinstance(resume_id, str) else None)
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="text 不能为空")
 
     try:
-        structured = extract_structured_resume(extraction_input)
-    except (LLMParseError, AppError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        structured = _extract_structured(text, resume_id)
+    except Exception as exc:
+        _raise_http_exception(exc)
 
     json_text = structured.model_dump_json(ensure_ascii=False)
-    if extraction_input.resume_id:
-        save_result_json(extraction_input.resume_id, json_text)
+    if resume_id:
+        save_result_json(resume_id, json_text)
 
     return JSONResponse(json.loads(json_text))

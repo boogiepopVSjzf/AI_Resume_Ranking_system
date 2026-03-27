@@ -11,10 +11,3 @@ class LLMGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     provider: Optional[ProviderName] = None
     model: Optional[str] = None
-
-
-class ExtractResumeRequest(BaseModel):
-    text: str = Field(..., min_length=1)
-    resume_id: Optional[str] = None
-    provider: Optional[ProviderName] = None
-    model: Optional[str] = None

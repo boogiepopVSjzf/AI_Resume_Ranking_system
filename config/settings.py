@@ -2,6 +2,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+from utils.constants import (
+    ALLOWED_EXTENSIONS,
+    MAX_UPLOAD_MB,
+    MAX_UPLOAD_BYTES,
+    MIN_UPLOAD_BYTES,
+    MAX_FILENAME_LENGTH,
+    MIN_EXTRACTED_TEXT_CHARS,
+)
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -11,19 +20,13 @@ if env_path.exists():
     load_dotenv(dotenv_path=env_path)
 
 STORAGE_DIR = BASE_DIR / "storage"
-PDF_DIR = STORAGE_DIR / "pdfs"
+UPLOAD_DIR = STORAGE_DIR / "uploads"
 TXT_DIR = STORAGE_DIR / "txts"
 RESULTS_DIR = STORAGE_DIR / "results"
 
-ALLOWED_EXTENSIONS = {".pdf"}
-MAX_UPLOAD_MB = 20
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MAX_FILENAME_LENGTH = 128
-MIN_EXTRACTED_TEXT_CHARS = 30
-
 # Primary LLM: Aliyun Dashscope (for feature_jzf compatibility)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5-122b-a10b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5-flash")
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 
