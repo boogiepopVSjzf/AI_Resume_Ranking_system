@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import requests
+from requests.adapters import HTTPAdapter
 from typing import Optional
 
 from config import settings
@@ -8,6 +9,26 @@ from utils.errors import LLMError
 
 
 SUPPORTED_PROVIDERS = {"dashscope", "gemini", "openai", "ollama"}
+
+# This is a workaround for ancient MacOS LibreSSL versions that cause SSLEOFError.
+# It forces requests to use a more robust set of ciphers.
+# See: https://github.com/urllib3/urllib3/issues/2653
+CIPHERS = (
+    "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:"
+    "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+    "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
+)
+
+class SSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        context = requests.packages.urllib3.util.ssl_.create_urllib3_context(ciphers=CIPHERS)
+        kwargs["ssl_context"] = context
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        context = requests.packages.urllib3.util.ssl_.create_urllib3_context(ciphers=CIPHERS)
+        kwargs["ssl_context"] = context
+        return super().proxy_manager_for(*args, **kwargs)
 
 #把传入的 provider（或默认配置）规范化成小写无空格的值，并校验它必须在系统支持的 provider 列表里，否则直接报错。
 def _resolve_provider(provider: Optional[str]) -> str:
@@ -92,7 +113,9 @@ def _call_openai(prompt: str, model: str) -> str:
     }
 
     try:
-        response = requests.post(
+        session = requests.Session()
+        session.mount("https://", SSLAdapter())
+        response = session.post(
             settings.OPENAI_API_URL,
             headers=headers,
             json=payload,
@@ -159,7 +182,9 @@ def _call_dashscope(prompt: str, model: str) -> str:
     }
 
     try:
-        response = requests.post(
+        session = requests.Session()
+        session.mount("https://", SSLAdapter())
+        response = session.post(
             f"{settings.LLM_BASE_URL}/chat/completions",
             headers=headers,
             json=payload,
