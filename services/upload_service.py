@@ -19,8 +19,10 @@ from utils.errors import (
     EncryptedPDFError,
     FileSizeError,
     InvalidFileType,
+    InvalidResumeError,
 )
 from utils.logger import get_logger
+from services.resume_validity_checker import ResumeValidityChecker
 
 logger = get_logger("upload_service")
 
@@ -84,6 +86,14 @@ def process_upload(ext: str, content: bytes) -> UploadResult:
         # Clean up uploaded file on any parsing failure
         _safe_unlink(upload_path)
         raise
+
+    # Validate that the extracted text is a valid resume
+    checker = ResumeValidityChecker()
+    validity_result = checker.check_text(text)
+    if validity_result.decision == "HARD_FAIL":
+        _safe_unlink(upload_path)
+        raise InvalidResumeError("上传的文件似乎不是一份有效的简历")
+
     
     txt_path = save_txt(resume_id, text)
     logger.info("Processed upload: resume_id=%s, txt=%s", resume_id, txt_path.name)
