@@ -41,7 +41,7 @@ def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optiona
 
     snippet = normalized[:4000]
     prompt = _build_resume_check_prompt(snippet)
-    raw_output = call_llm(prompt, provider=provider, model=model)
+    raw_output, _ = call_llm(prompt, provider=provider, model=model)
     parsed = _extract_json(raw_output)
 
     value = parsed.get("is_resume")
@@ -102,7 +102,7 @@ def extract_structured_resume(
     data: ExtractionInput,
     provider: Optional[str] = None,
     model: Optional[str] = None,
-) -> ResumeStructured:
+) -> tuple[ResumeStructured, dict]:
     """
     Convert raw resume text into a validated ResumeStructured object.
     """
@@ -113,11 +113,11 @@ def extract_structured_resume(
         raise NotResumeError("Input text does not look like a resume")
 
     prompt = _build_prompt(data.text)
-    raw_output = call_llm(prompt, provider=provider, model=model)
+    raw_output, usage = call_llm(prompt, provider=provider, model=model)
     parsed = _extract_json(raw_output)
 
     try:
-        return ResumeStructured.model_validate(parsed)
+        return ResumeStructured.model_validate(parsed), usage
     except ValidationError as exc:
         raise LLMParseError(
             f"LLM output does not match ResumeStructured schema: {exc}"

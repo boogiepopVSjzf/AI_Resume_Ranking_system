@@ -19,6 +19,11 @@ class InvalidFileType(AppError):
     pass
 
 
+class InvalidResumeError(AppError):
+    """The uploaded file content is not a valid resume."""
+    pass
+
+
 class FileSizeError(AppError):
     """File is outside the accepted size range (too small or too large)."""
     pass

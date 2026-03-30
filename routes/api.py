@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -13,6 +14,7 @@ from services.upload_service import (
     validate_filename,
 )
 from storage.file_store import save_result_json
+
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
     ERR_FILE_CONTENT_EMPTY,
@@ -25,14 +27,13 @@ from utils.constants import (
     MAX_BATCH_SIZE,
 )
 from utils.errors import (
-    AppError,
     CorruptedPDFError,
     DocumentExtractError,
     EncryptedPDFError,
     FileSizeError,
     InvalidFileType,
-    LLMParseError,
-    NotResumeError,
+    InvalidResumeError,
+    LLMError,
 )
 from utils.logger import get_logger
 from schemas.models import ExtractionInput
@@ -44,12 +45,11 @@ logger = get_logger("api")
 _EXCEPTION_STATUS_MAP = {
     InvalidFileType: HTTP_400_BAD_REQUEST,
     FileSizeError: HTTP_400_BAD_REQUEST,
+    InvalidResumeError: HTTP_422_UNPROCESSABLE_ENTITY, # Add this line
     EncryptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
     CorruptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
     DocumentExtractError: HTTP_422_UNPROCESSABLE_ENTITY,
-    NotResumeError: HTTP_422_UNPROCESSABLE_ENTITY,
-    LLMParseError: HTTP_502_BAD_GATEWAY,
-    AppError: HTTP_502_BAD_GATEWAY,
+    LLMError: HTTP_502_BAD_GATEWAY,
 }
 
 
@@ -104,7 +104,7 @@ def index():
     return JSONResponse({
         "message": "ok",
         "docs": "/docs",
-        "endpoints": ["/api/upload", "/api/extract", "/api/parse"],
+        "endpoints": ["/api/upload", "/api/upload/batch", "/api/extract", "/api/parse"],
     })
 
 
@@ -150,23 +150,28 @@ async def upload_resume(request: Request, files: list[UploadFile] = File(...)):
 @router.post("/api/parse")
 async def parse_resume(request: Request, file: UploadFile = File(...)):
     """Upload, convert to text, and extract structured data from a resume."""
+    start_time = time.time()
     try:
         ext = validate_filename(file.filename)
         content = await _read_upload_content(file, _get_content_length(request))
         result = process_upload(ext, content)
-        structured = _extract_structured(result.text, result.resume_id)
+        structured, usage = _extract_structured(result.text, result.resume_id)
     except HTTPException:
         raise
     except Exception as exc:
         _raise_http_exception(exc)
 
+    duration = time.time() - start_time
     json_text = structured.model_dump_json(ensure_ascii=False)
     save_result_json(result.resume_id, json_text)
-    logger.info("Parsed resume %s", result.resume_id)
+
+    logger.info("Parsed resume %s in %.2f seconds", result.resume_id, duration)
 
     return JSONResponse({
         "resume_id": result.resume_id,
         "result": json.loads(json_text),
+        "usage": usage,
+        "duration_seconds": round(duration, 2),
     })
 
 
@@ -187,5 +192,6 @@ async def extract_resume(payload: dict):
     json_text = structured.model_dump_json(ensure_ascii=False)
     if resume_id:
         save_result_json(resume_id, json_text)
+        
 
     return JSONResponse(json.loads(json_text))
