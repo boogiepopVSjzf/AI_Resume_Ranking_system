@@ -109,32 +109,12 @@ def index():
 
 
 @router.post("/api/upload")
-async def upload_resume(request: Request, file: UploadFile = File(...)):
-    """Upload and convert a resume file to text."""
-    try:
-        ext = validate_filename(file.filename)
-        content = await _read_upload_content(file, _get_content_length(request))
-        result = process_upload(ext, content)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _raise_http_exception(exc)
-
-    logger.info("Uploaded resume %s", result.resume_id)
-    return JSONResponse({
-        "resume_id": result.resume_id,
-        "text": result.text,
-        "txt_path": result.txt_path,
-    })
-
-
-@router.post("/api/upload/batch")
-async def upload_resume_batch(request: Request, files: list[UploadFile] = File(...)):
-    """Batch upload and convert multiple resume files."""
+async def upload_resume(request: Request, files: list[UploadFile] = File(...)):
+    """Upload and convert one or more resume files to text."""
     if len(files) > MAX_BATCH_SIZE:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"批量上传最多支持 {MAX_BATCH_SIZE} 个文件，当前 {len(files)} 个"
+            detail=f"单次上传最多支持 {MAX_BATCH_SIZE} 个文件，当前 {len(files)} 个",
         )
 
     succeeded, failed = [], []
@@ -148,7 +128,7 @@ async def upload_resume_batch(request: Request, files: list[UploadFile] = File(.
         try:
             content = await _read_upload_content(file, None)
         except HTTPException as exc:
-            logger.error("[BATCH] Skipping %s: %s", filename, exc.detail)
+            logger.error("Skipping %s: %s", filename, exc.detail)
             failed.append({"filename": filename, "reason": exc.detail})
             continue
 
