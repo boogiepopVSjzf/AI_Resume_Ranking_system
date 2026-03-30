@@ -41,7 +41,7 @@ def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optiona
 
     snippet = normalized[:4000]
     prompt = _build_resume_check_prompt(snippet)
-    raw_output = call_llm(prompt, provider=provider, model=model)
+    raw_output, _ = call_llm(prompt, provider=provider, model=model)
     parsed = _extract_json(raw_output)
 
     value = parsed.get("is_resume")
