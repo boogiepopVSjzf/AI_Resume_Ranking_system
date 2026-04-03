@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS resumes (
+    resume_id TEXT PRIMARY KEY,
+    profile_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
