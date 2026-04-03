@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+
 
 from utils.constants import (
     ALLOWED_EXTENSIONS,
@@ -11,13 +11,9 @@ from utils.constants import (
     MIN_EXTRACTED_TEXT_CHARS,
 )
 
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parents[1]
-env_path = BASE_DIR / ".env"
 
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+
 
 STORAGE_DIR = BASE_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
@@ -26,8 +22,8 @@ RESULTS_DIR = STORAGE_DIR / "results"
 
 # Primary LLM: Aliyun Dashscope (for feature_jzf compatibility)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5-flash")
-LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen-max")
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 
 # Default routing to Dashscope
