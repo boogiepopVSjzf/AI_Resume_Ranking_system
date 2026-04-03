@@ -14,6 +14,8 @@ from services.upload_service import (
     validate_filename,
 )
 from storage.file_store import save_result_json
+from storage.db_config import init_db
+from storage.resume_repository import save_parsed_resume
 
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
@@ -40,6 +42,8 @@ from schemas.models import ExtractionInput
 
 router = APIRouter()
 logger = get_logger("api")
+
+init_db()
 
 # Exception to HTTP status code mapping
 _EXCEPTION_STATUS_MAP = {
@@ -184,6 +188,7 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
     duration = time.time() - start_time
     json_text = structured.model_dump_json(ensure_ascii=False)
     save_result_json(result.resume_id, json_text)
+    save_parsed_resume(result.resume_id, structured)
 
     logger.info("Parsed resume %s in %.2f seconds", result.resume_id, duration)
 
@@ -204,14 +209,18 @@ async def extract_resume(payload: dict):
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="text 不能为空")
 
-    try:
-        structured = _extract_structured(text, resume_id)
+        try:
+        structured, usage = _extract_structured(text, resume_id)
     except Exception as exc:
         _raise_http_exception(exc)
 
     json_text = structured.model_dump_json(ensure_ascii=False)
+
     if resume_id:
         save_result_json(resume_id, json_text)
-        
+        save_parsed_resume(resume_id, structured)
 
-    return JSONResponse(json.loads(json_text))
+    return JSONResponse({
+        "result": json.loads(json_text),
+        "usage": usage,
+    })
