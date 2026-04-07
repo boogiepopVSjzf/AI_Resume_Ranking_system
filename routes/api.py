@@ -1,7 +1,7 @@
 import time
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from config import settings
@@ -11,6 +11,12 @@ from services.upload_service import (
     process_upload,
     validate_batch_file,
     validate_filename,
+)
+from services.job_context_service import (
+    JDSourceConflict,
+    JobContextEmpty,
+    build_job_context,
+    resolve_jd_body,
 )
 from services.resume_storage_bundle import build_resume_storage_bundle
 from storage.file_store import save_result_json
@@ -104,7 +110,7 @@ def index():
     return JSONResponse({
         "message": "ok",
         "docs": "/docs",
-        "endpoints": ["/api/upload", "/api/upload/batch", "/api/extract", "/api/parse"],
+        "endpoints": ["/api/upload", "/api/extract", "/api/parse", "/api/job-context"],
     })
 
 
@@ -200,3 +206,29 @@ async def extract_resume(payload: dict):
         "resume": bundle,
         "usage": usage,
     })
+
+
+@router.post("/api/job-context")
+async def submit_job_context(
+    hr_note: str = Form(""),
+    jd_text: str = Form(""),
+    jd_file: Optional[UploadFile] = File(None),
+):
+    """Accept HR note and/or JD (text or PDF) and return merged context."""
+    jd_file_content: Optional[bytes] = None
+    if jd_file is not None:
+        raw = await jd_file.read()
+        if raw:
+            jd_file_content = raw
+
+    try:
+        jd_body = resolve_jd_body(jd_text, jd_file_content)
+        result = build_job_context(hr_note, jd_body)
+    except JDSourceConflict as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except JobContextEmpty as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse(result)
