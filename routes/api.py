@@ -1,4 +1,3 @@
-import json
 import time
 from typing import Optional
 
@@ -13,6 +12,7 @@ from services.upload_service import (
     validate_batch_file,
     validate_filename,
 )
+from services.resume_storage_bundle import build_resume_storage_bundle
 from storage.file_store import save_result_json
 
 from utils.constants import (
@@ -165,11 +165,12 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
     json_text = structured.model_dump_json(ensure_ascii=False)
     save_result_json(result.resume_id, json_text)
 
+    bundle = build_resume_storage_bundle(structured)
     logger.info("Parsed resume %s in %.2f seconds", result.resume_id, duration)
 
     return JSONResponse({
         "resume_id": result.resume_id,
-        "result": json.loads(json_text),
+        "resume": bundle,
         "usage": usage,
         "duration_seconds": round(duration, 2),
     })
@@ -185,13 +186,17 @@ async def extract_resume(payload: dict):
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="text 不能为空")
 
     try:
-        structured = _extract_structured(text, resume_id)
+        structured, usage = _extract_structured(text, resume_id)
     except Exception as exc:
         _raise_http_exception(exc)
 
     json_text = structured.model_dump_json(ensure_ascii=False)
     if resume_id:
         save_result_json(resume_id, json_text)
-        
 
-    return JSONResponse(json.loads(json_text))
+    bundle = build_resume_storage_bundle(structured)
+
+    return JSONResponse({
+        "resume": bundle,
+        "usage": usage,
+    })
