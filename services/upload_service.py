@@ -22,7 +22,7 @@ from utils.errors import (
     InvalidResumeError,
 )
 from utils.logger import get_logger
-from services.resume_validity_checker import ResumeValidityChecker
+
 
 logger = get_logger("upload_service")
 
