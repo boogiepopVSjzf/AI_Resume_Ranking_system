@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from schemas.models import ExtractionInput, ResumeStructured
 from services.llm_service import call_llm
 from utils.errors import LLMParseError, NotResumeError
+from utils.llm_json import extract_json as _extract_json
 
 
 def _normalize_text(text: str) -> str:
@@ -55,24 +56,6 @@ def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optiona
             return False
 
     raise LLMParseError("LLM output missing boolean field: is_resume")
-
-#把 LLM 的原始输出里可能被代码块包着的 JSON 提取出来并解析成 dict ，解析不了就抛 LLMParseError 。
-def _extract_json(raw_output: str) -> dict:
-    """Extract JSON object from raw LLM output."""
-    raw_output = raw_output.strip()
-
-    fenced_match = re.search(r"```json\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
-    if fenced_match:
-        raw_output = fenced_match.group(1).strip()
-
-    generic_match = re.search(r"```\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
-    if generic_match:
-        raw_output = generic_match.group(1).strip()
-
-    try:
-        return json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise LLMParseError("LLM output is not valid JSON") from exc
 
 #根据 ResumeStructured 模型的 JSON schema 构建提取提示,要改prompt也是在这里改
 def _build_prompt(text: str) -> str:

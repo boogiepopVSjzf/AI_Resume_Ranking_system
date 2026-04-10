@@ -18,6 +18,7 @@ from services.job_context_service import (
     build_job_context,
     resolve_jd_body,
 )
+from services.job_query_rewrite_service import rewrite_merged_context
 from services.resume_storage_bundle import build_resume_storage_bundle
 from storage.file_store import save_result_json
 
@@ -40,6 +41,7 @@ from utils.errors import (
     InvalidFileType,
     InvalidResumeError,
     LLMError,
+    LLMParseError,
 )
 from utils.logger import get_logger
 from schemas.models import ExtractionInput
@@ -51,7 +53,8 @@ logger = get_logger("api")
 _EXCEPTION_STATUS_MAP = {
     InvalidFileType: HTTP_400_BAD_REQUEST,
     FileSizeError: HTTP_400_BAD_REQUEST,
-    InvalidResumeError: HTTP_422_UNPROCESSABLE_ENTITY, # Add this line
+    InvalidResumeError: HTTP_422_UNPROCESSABLE_ENTITY,
+    LLMParseError: HTTP_422_UNPROCESSABLE_ENTITY,
     EncryptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
     CorruptedPDFError: HTTP_422_UNPROCESSABLE_ENTITY,
     DocumentExtractError: HTTP_422_UNPROCESSABLE_ENTITY,
@@ -110,7 +113,7 @@ def index():
     return JSONResponse({
         "message": "ok",
         "docs": "/docs",
-        "endpoints": ["/api/upload", "/api/extract", "/api/parse", "/api/job-context"],
+        "endpoints": ["/api/upload", "/api/extract", "/api/parse", "/api/job-context", "/api/query-rewrite"],
     })
 
 
@@ -213,8 +216,14 @@ async def submit_job_context(
     hr_note: str = Form(""),
     jd_text: str = Form(""),
     jd_file: Optional[UploadFile] = File(None),
+    rewrite: bool = Form(False),
 ):
-    """Accept HR note and/or JD (text or PDF) and return merged context."""
+    """Accept HR note and/or JD (text or PDF) and return merged context.
+
+    When ``rewrite=True``, the merged context is additionally sent through
+    the LLM query-rewrite pipeline and the response includes
+    ``standardized_query`` and ``query_rewrite_usage``.
+    """
     jd_file_content: Optional[bytes] = None
     if jd_file is not None:
         raw = await jd_file.read()
@@ -231,4 +240,36 @@ async def submit_job_context(
     except Exception as exc:
         _raise_http_exception(exc)
 
+    if rewrite:
+        try:
+            query, rewrite_usage = rewrite_merged_context(result["merged_context"])
+            result["standardized_query"] = query.model_dump()
+            result["query_rewrite_usage"] = rewrite_usage
+        except Exception as exc:
+            _raise_http_exception(exc)
+
     return JSONResponse(result)
+
+
+@router.post("/api/query-rewrite")
+async def query_rewrite(payload: dict):
+    """Rewrite merged_context into hard_filters + search_query via LLM."""
+    merged_context = payload.get("merged_context")
+    if not isinstance(merged_context, str) or not merged_context.strip():
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="merged_context is required and must be a non-empty string",
+        )
+
+    try:
+        query, usage = rewrite_merged_context(merged_context)
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        "hard_filters": query.hard_filters.model_dump(),
+        "search_query": query.search_query,
+        "usage": usage,
+    })
