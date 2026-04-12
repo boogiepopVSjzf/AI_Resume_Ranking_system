@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 from typing import Optional
 
 from pydantic import ValidationError
@@ -13,8 +11,6 @@ from utils.llm_json import extract_json
 
 
 def _build_rewrite_prompt(merged_context: str) -> str:
-    schema_dict = StandardizedJobQuery.model_json_schema()
-
     return f"""
 You are a job-requirement analysis system.
 
@@ -32,9 +28,16 @@ Rules:
 - Return JSON only. Do not wrap the JSON in markdown.
 - Only use information explicitly stated in the text. Do not guess.
 - For fields not mentioned, use null for scalars and [] for lists.
-- Follow this JSON schema exactly:
-
-{json.dumps(schema_dict, ensure_ascii=False, indent=2)}
+- Follow this exact JSON shape:
+{{
+  "hard_filters": {{
+    "min_yoe": integer | null,
+    "required_skills": string[],
+    "education_level": "high_school" | "associate" | "bachelor" | "master" | "phd" | "other" | null,
+    "major": "computer_science" | "mathematics" | "medicine" | "finance" | "engineering" | "other" | null
+  }},
+  "search_query": string
+}}
 
 Merged context:
 {merged_context}

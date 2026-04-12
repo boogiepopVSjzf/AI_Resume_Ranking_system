@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Optional
 
 from pydantic import ValidationError
 
 from schemas.models import ExtractionInput, ResumeStructured
-from services.llm_service import call_llm
 from utils.errors import LLMParseError, NotResumeError
+from services.llm_service import call_llm
+from utils.llm_json import extract_json
 
 
 def _normalize_text(text: str) -> str:
@@ -16,69 +16,32 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _build_resume_check_prompt(text: str) -> str:
-    return f"""
-You are a resume classification system.
-
-Decide whether the input text is a resume/CV.
-
-Return JSON only. Do not wrap in markdown.
-
-JSON schema:
-{{
-  "is_resume": boolean
-}}
-
-Text:
-{text}
-""".strip()
-
-
-def _looks_like_resume(text: str, provider: Optional[str] = None, model: Optional[str] = None) -> bool:
+def _looks_like_resume(text: str) -> bool:
     normalized = _normalize_text(text)
     if len(normalized) < 40:
         return False
-
-    snippet = normalized[:4000]
-    prompt = _build_resume_check_prompt(snippet)
-    raw_output, _ = call_llm(prompt, provider=provider, model=model)
-    parsed = _extract_json(raw_output)
-
-    value = parsed.get("is_resume")
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "yes"}:
-            return True
-        if lowered in {"false", "no"}:
-            return False
-
-    raise LLMParseError("LLM output missing boolean field: is_resume")
-
-#把 LLM 的原始输出里可能被代码块包着的 JSON 提取出来并解析成 dict ，解析不了就抛 LLMParseError 。
-def _extract_json(raw_output: str) -> dict:
-    """Extract JSON object from raw LLM output."""
-    raw_output = raw_output.strip()
-
-    fenced_match = re.search(r"```json\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
-    if fenced_match:
-        raw_output = fenced_match.group(1).strip()
-
-    generic_match = re.search(r"```\s*(\{.*\})\s*```", raw_output, flags=re.DOTALL)
-    if generic_match:
-        raw_output = generic_match.group(1).strip()
-
-    try:
-        return json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise LLMParseError("LLM output is not valid JSON") from exc
+    lowered = normalized.lower()
+    score = 0
+    indicators = (
+        "experience",
+        "education",
+        "skills",
+        "projects",
+        "work experience",
+        "professional experience",
+    )
+    for indicator in indicators:
+        if indicator in lowered:
+            score += 1
+    if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", normalized):
+        score += 1
+    if re.search(r"\+?\d[\d()\-\s]{7,}\d", normalized):
+        score += 1
+    return score >= 2
 
 #根据 ResumeStructured 模型的 JSON schema 构建提取提示,要改prompt也是在这里改
 def _build_prompt(text: str) -> str:
-    """Build the extraction prompt using the schema contract."""
-    schema_dict = ResumeStructured.model_json_schema()
-
+    """Build a concise extraction prompt to reduce token cost and latency."""
     return f"""
 You are a resume information extraction system.
 
@@ -93,9 +56,46 @@ Rules:
 6. For education_level, choose exactly one of: "high_school", "associate", "bachelor", "master", "phd", "other".
 7. For major, choose exactly one of: "computer_science", "mathematics", "medicine", "finance", "engineering", "other".
 8. Keep education[].major as the original major text from the resume when present. Use the top-level `major` field for the standardized category.
-9. Follow this JSON schema exactly:
-
-{json.dumps(schema_dict, ensure_ascii=False, indent=2)}
+9. Follow this exact JSON shape:
+{{
+  "name": string | null,
+  "email": string | null,
+  "phone": string | null,
+  "YoE": string | null,
+  "education_level": "high_school" | "associate" | "bachelor" | "master" | "phd" | "other" | null,
+  "major": "computer_science" | "mathematics" | "medicine" | "finance" | "engineering" | "other" | null,
+  "location": string | null,
+  "skills": string[],
+  "education": [
+    {{
+      "school": string | null,
+      "degree": string | null,
+      "major": string | null,
+      "start_date": string | null,
+      "end_date": string | null,
+      "description": string | null
+    }}
+  ],
+  "experience": [
+    {{
+      "company": string | null,
+      "title": string | null,
+      "location": string | null,
+      "start_date": string | null,
+      "end_date": string | null,
+      "highlights": string[]
+    }}
+  ],
+  "projects": [
+    {{
+      "name": string | null,
+      "role": string | null,
+      "start_date": string | null,
+      "end_date": string | null,
+      "highlights": string[]
+    }}
+  ]
+}}
 
 Resume text:
 {text}
@@ -113,12 +113,12 @@ def extract_structured_resume(
     if not data.text.strip():
         raise NotResumeError("Input text is empty")
 
-    if not _looks_like_resume(data.text, provider=provider, model=model):
+    if not _looks_like_resume(data.text):
         raise NotResumeError("Input text does not look like a resume")
 
     prompt = _build_prompt(data.text)
     raw_output, usage = call_llm(prompt, provider=provider, model=model)
-    parsed = _extract_json(raw_output)
+    parsed = extract_json(raw_output)
 
     try:
         return ResumeStructured.model_validate(parsed), usage

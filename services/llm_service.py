@@ -34,11 +34,17 @@ class SSLAdapter(HTTPAdapter):
         return super().proxy_manager_for(*args, **kwargs)
 
 
+_HTTPS_SESSION = None
+
+
 def _build_https_session() -> requests.Session:
-    session = requests.Session()
-    session.mount("https://", SSLAdapter())
-    session.verify = certifi.where()
-    return session
+    global _HTTPS_SESSION
+    if _HTTPS_SESSION is None:
+        session = requests.Session()
+        session.mount("https://", SSLAdapter())
+        session.verify = certifi.where()
+        _HTTPS_SESSION = session
+    return _HTTPS_SESSION
 
 #把传入的 provider（或默认配置）规范化成小写无空格的值，并校验它必须在系统支持的 provider 列表里，否则直接报错。
 def _resolve_provider(provider: Optional[str]) -> str:

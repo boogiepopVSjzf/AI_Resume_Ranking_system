@@ -1,6 +1,8 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -8,8 +10,7 @@ from fastapi.responses import JSONResponse
 from config import settings
 from services.extract_service import extract_structured_resume
 from services.upload_service import (
-    process_single_file_in_batch,
-    process_upload,
+    process_upload_with_resume_id,
     validate_batch_file,
     validate_filename,
 )
@@ -27,7 +28,6 @@ from storage.s3_storage import upload_resume_source_file
 
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
-    ERR_FILE_CONTENT_EMPTY,
     ERR_FILE_EMPTY,
     ERR_FILE_TOO_LARGE,
     HTTP_400_BAD_REQUEST,
@@ -52,6 +52,7 @@ from schemas.models import ExtractionInput
 
 router = APIRouter()
 logger = get_logger("api")
+_S3_UPLOAD_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 # Exception to HTTP status code mapping
 _EXCEPTION_STATUS_MAP = {
@@ -112,6 +113,15 @@ def _extract_structured(text: str, resume_id: Optional[str]):
     return extract_structured_resume(ExtractionInput(text=text, resume_id=resume_id))
 
 
+def _bundle_for_response(bundle: dict) -> dict:
+    """Trim large internal fields that do not need to travel back to the client."""
+    if settings.INCLUDE_EMBEDDING_IN_RESPONSE:
+        return bundle
+    response_bundle = dict(bundle)
+    response_bundle.pop("embedding", None)
+    return response_bundle
+
+
 def _parse_single_resume_file(
     *,
     filename: str,
@@ -120,19 +130,26 @@ def _parse_single_resume_file(
 ) -> dict:
     """Parse one resume file end-to-end and return the API payload."""
     start_time = time.time()
+    s3_upload_future = None
+    resume_id = uuid4().hex
 
-    result = process_upload(ext, content)
+    if settings.ENABLE_S3_STORAGE:
+        s3_upload_future = _S3_UPLOAD_EXECUTOR.submit(
+            upload_resume_source_file,
+            resume_id=resume_id,
+            filename=filename or f"resume{ext}",
+            ext=ext,
+            content=content,
+        )
+
+    result = process_upload_with_resume_id(ext, content, resume_id)
+
     structured, usage = _extract_structured(result.text, result.resume_id)
 
     bundle = build_resume_storage_bundle(structured)
     pdf_upload = None
-    if settings.ENABLE_S3_STORAGE:
-        pdf_upload = upload_resume_source_file(
-            resume_id=result.resume_id,
-            filename=filename or f"{result.resume_id}{ext}",
-            ext=ext,
-            content=content,
-        )
+    if s3_upload_future is not None:
+        pdf_upload = s3_upload_future.result()
 
     persisted_to_db = _persist_bundle_if_enabled(
         resume_id=result.resume_id,
@@ -148,7 +165,7 @@ def _parse_single_resume_file(
     logger.info("Parsed resume %s in %.2f seconds", result.resume_id, duration)
     return {
         "resume_id": result.resume_id,
-        "resume": bundle,
+        "resume": _bundle_for_response(bundle),
         "persisted_to_db": persisted_to_db,
         "pdf_uploaded_to_storage": pdf_upload is not None,
         "pdf_storage_bucket": pdf_upload.bucket if pdf_upload else None,
@@ -191,52 +208,11 @@ def index():
         "message": "ok",
         "docs": "/docs",
         "endpoints": [
-            "/api/upload",
-            "/api/extract",
             "/api/parse",
             "/api/parse/batch",
             "/api/job-context",
             "/api/query-rewrite",
         ],
-    })
-
-
-@router.post("/api/upload")
-async def upload_resume(request: Request, files: list[UploadFile] = File(...)):
-    """Upload and convert one or more resume files to text."""
-    if len(files) > MAX_BATCH_SIZE:
-        raise HTTPException(
-            status_code=HTTP_400_BAD_REQUEST,
-            detail=f"单次上传最多支持 {MAX_BATCH_SIZE} 个文件，当前 {len(files)} 个",
-        )
-
-    succeeded, failed = [], []
-
-    for file in files:
-        ext, filename, failure = validate_batch_file(file.filename)
-        if failure:
-            failed.append(failure)
-            continue
-
-        try:
-            content = await _read_upload_content(file, None)
-        except HTTPException as exc:
-            logger.error("Skipping %s: %s", filename, exc.detail)
-            failed.append({"filename": filename, "reason": exc.detail})
-            continue
-
-        success, failure = process_single_file_in_batch(filename, ext, content)
-        if success:
-            succeeded.append(success)
-        if failure:
-            failed.append(failure)
-
-    return JSONResponse({
-        "total": len(files),
-        "succeeded_count": len(succeeded),
-        "failed_count": len(failed),
-        "succeeded": succeeded,
-        "failed": failed,
     })
 
 
@@ -306,35 +282,6 @@ async def parse_resume_batch(request: Request, files: list[UploadFile] = File(..
         "succeeded": succeeded,
         "failed": failed,
     })
-
-
-@router.post("/api/extract")
-async def extract_resume(payload: dict):
-    """Extract structured data from resume text."""
-    text = payload.get("text")
-    resume_id = payload.get("resume_id") if isinstance(payload.get("resume_id"), str) else None
-
-    if not isinstance(text, str) or not text.strip():
-        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="text 不能为空")
-
-    try:
-        structured, usage = _extract_structured(text, resume_id)
-    except Exception as exc:
-        _raise_http_exception(exc)
-
-    bundle = build_resume_storage_bundle(structured)
-    persisted_to_db = _persist_bundle_if_enabled(
-        resume_id=resume_id,
-        bundle=bundle,
-    )
-
-    return JSONResponse({
-        "resume": bundle,
-        "persisted_to_db": persisted_to_db,
-        "usage": usage,
-    })
-
-
 @router.post("/api/job-context")
 async def submit_job_context(
     hr_note: str = Form(""),

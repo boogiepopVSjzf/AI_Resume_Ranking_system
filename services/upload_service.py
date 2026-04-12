@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
-from uuid import uuid4
 
 from config import settings
 from services.document_to_txt import extract_text_from_document
@@ -20,7 +19,6 @@ from utils.errors import (
     EncryptedPDFError,
     FileSizeError,
     InvalidFileType,
-    InvalidResumeError,
 )
 from utils.logger import get_logger
 
@@ -35,16 +33,6 @@ class UploadResult:
     text: str
 
 
-@dataclass
-class BatchUploadResult:
-    """Result of a batch upload operation."""
-    total: int
-    succeeded_count: int
-    failed_count: int
-    succeeded: list[dict]
-    failed: list[dict]
-
-
 def validate_filename(filename: Optional[str]) -> str:
     """Validate filename and return the extension."""
     if not filename:
@@ -57,27 +45,11 @@ def validate_filename(filename: Optional[str]) -> str:
     return ext
 
 
-def process_upload(ext: str, content: bytes) -> UploadResult:
+def process_upload_with_resume_id(ext: str, content: bytes, resume_id: str) -> UploadResult:
     """
-    Process uploaded file content: validate and convert to text without local persistence.
-    
-    Args:
-        ext: File extension (e.g., '.pdf', '.docx')
-        content: File content bytes
-        
-    Returns:
-        UploadResult with resume_id and text
-        
-    Raises:
-        InvalidFileType: If file content doesn't match extension
-        FileSizeError: If file is too small/large
-        EncryptedPDFError: If PDF is encrypted
-        CorruptedPDFError: If PDF is corrupted
-        DocumentExtractError: If text extraction fails
+    Process uploaded file content with a caller-supplied resume_id.
+    This lets upstream services parallelise storage upload and text extraction.
     """
-    validate_upload_magic(ext, content)
-    
-    resume_id = uuid4().hex
     upload_path: Optional[Path] = None
 
     try:
@@ -93,45 +65,12 @@ def process_upload(ext: str, content: bytes) -> UploadResult:
         if upload_path is not None:
             _safe_unlink(upload_path)
 
-    # Validate that the extracted text is a valid resume
-    checker = ResumeValidityChecker()
-    validity_result = checker.check_text(text)
-    if validity_result.decision == "HARD_FAIL":
-        raise InvalidResumeError("上传的文件似乎不是一份有效的简历")
-
     logger.info("Processed upload: resume_id=%s", resume_id)
     
     return UploadResult(
         resume_id=resume_id,
         text=text,
     )
-
-
-def process_single_file_in_batch(
-    filename: str,
-    ext: str,
-    content: bytes,
-) -> tuple[Optional[dict], Optional[dict]]:
-    """
-    Process a single file in batch upload, reusing the core process_upload logic.
-    
-    Returns:
-        Tuple of (success_dict, failure_dict) - one will be None
-    """
-    try:
-        result = process_upload(ext, content)
-        logger.info("[BATCH] Processed %s -> resume_id=%s", filename, result.resume_id)
-        return {
-            "resume_id": result.resume_id,
-            "filename": filename,
-        }, None
-    except (InvalidFileType, FileSizeError, EncryptedPDFError, CorruptedPDFError, DocumentExtractError) as exc:
-        logger.error("[BATCH] %s: %s", filename, exc)
-        return None, {"filename": filename, "reason": str(exc)}
-    except Exception as exc:
-        logger.error("[BATCH] Unexpected error for %s: %s", filename, exc)
-        return None, {"filename": filename, "reason": f"处理失败: {exc}"}
-
 
 def validate_batch_file(filename: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[dict]]:
     """
