@@ -10,10 +10,8 @@ import requests
 llm_error_logger = logging.getLogger("LLM_Telemetry")
 llm_error_logger.setLevel(logging.ERROR)
 
-# Optionally, configure a dedicated file handler for LLM errors
-# so they don't get lost in standard application logs.
-file_handler = logging.FileHandler("storage/results/llm_production_errors.jsonl")
-llm_error_logger.addHandler(file_handler)
+if not llm_error_logger.handlers:
+    llm_error_logger.addHandler(logging.StreamHandler())
 
 def with_llm_error_tracking(func):
     """

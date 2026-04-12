@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import certifi
 import requests
 from requests.adapters import HTTPAdapter
 from typing import Optional
@@ -22,13 +23,22 @@ CIPHERS = (
 class SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         context = requests.packages.urllib3.util.ssl_.create_urllib3_context(ciphers=CIPHERS)
+        context.load_verify_locations(certifi.where())
         kwargs["ssl_context"] = context
         return super().init_poolmanager(*args, **kwargs)
 
     def proxy_manager_for(self, *args, **kwargs):
         context = requests.packages.urllib3.util.ssl_.create_urllib3_context(ciphers=CIPHERS)
+        context.load_verify_locations(certifi.where())
         kwargs["ssl_context"] = context
         return super().proxy_manager_for(*args, **kwargs)
+
+
+def _build_https_session() -> requests.Session:
+    session = requests.Session()
+    session.mount("https://", SSLAdapter())
+    session.verify = certifi.where()
+    return session
 
 #把传入的 provider（或默认配置）规范化成小写无空格的值，并校验它必须在系统支持的 provider 列表里，否则直接报错。
 def _resolve_provider(provider: Optional[str]) -> str:
@@ -75,8 +85,7 @@ def _call_gemini(prompt: str, model: str) -> tuple[str, dict]:
     }
 
     try:
-        session = requests.Session()
-        session.mount("https://", SSLAdapter())
+        session = _build_https_session()
         response = session.post(
             url,
             headers={"Content-Type": "application/json"},
@@ -118,8 +127,7 @@ def _call_openai(prompt: str, model: str) -> tuple[str, dict]:
     }
 
     try:
-        session = requests.Session()
-        session.mount("https://", SSLAdapter())
+        session = _build_https_session()
         response = session.post(
             settings.OPENAI_API_URL,
             headers=headers,
@@ -192,8 +200,7 @@ def _call_dashscope(prompt: str, model: str) -> tuple[str, dict]:
     }
 
     try:
-        session = requests.Session()
-        session.mount("https://", SSLAdapter())
+        session = _build_https_session()
         response = session.post(
             f"{settings.LLM_BASE_URL}/chat/completions",
             headers=headers,

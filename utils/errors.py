@@ -57,3 +57,8 @@ class LLMParseError(AppError):
 class NotResumeError(AppError):
     """Raised when input text does not look like a resume."""
     pass
+
+
+class DatabaseError(AppError):
+    """Raised when cloud database persistence fails."""
+    pass

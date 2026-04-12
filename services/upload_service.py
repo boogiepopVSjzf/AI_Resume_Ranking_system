@@ -6,12 +6,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Optional
+from uuid import uuid4
 
 from config import settings
 from services.document_to_txt import extract_text_from_document
 from services.document_validate import allowed_types_hint, validate_upload_magic
-from storage.file_store import new_resume_id, save_upload_bytes, save_txt
 from utils.constants import ERR_UNSUPPORTED_FILE_TYPE
 from utils.errors import (
     CorruptedPDFError,
@@ -32,7 +33,6 @@ class UploadResult:
     """Result of a successful upload operation."""
     resume_id: str
     text: str
-    txt_path: str
 
 
 @dataclass
@@ -59,14 +59,14 @@ def validate_filename(filename: Optional[str]) -> str:
 
 def process_upload(ext: str, content: bytes) -> UploadResult:
     """
-    Process uploaded file content: validate, save, convert to text.
+    Process uploaded file content: validate and convert to text without local persistence.
     
     Args:
         ext: File extension (e.g., '.pdf', '.docx')
         content: File content bytes
         
     Returns:
-        UploadResult with resume_id, text, and txt_path
+        UploadResult with resume_id and text
         
     Raises:
         InvalidFileType: If file content doesn't match extension
@@ -77,31 +77,33 @@ def process_upload(ext: str, content: bytes) -> UploadResult:
     """
     validate_upload_magic(ext, content)
     
-    resume_id = new_resume_id()
-    upload_path = save_upload_bytes(resume_id, ext, content)
-    
+    resume_id = uuid4().hex
+    upload_path: Optional[Path] = None
+
     try:
+        with NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(content)
+            upload_path = Path(tmp.name)
         text = extract_text_from_document(upload_path)
     except Exception:
-        # Clean up uploaded file on any parsing failure
-        _safe_unlink(upload_path)
+        if upload_path is not None:
+            _safe_unlink(upload_path)
         raise
+    finally:
+        if upload_path is not None:
+            _safe_unlink(upload_path)
 
     # Validate that the extracted text is a valid resume
     checker = ResumeValidityChecker()
     validity_result = checker.check_text(text)
     if validity_result.decision == "HARD_FAIL":
-        _safe_unlink(upload_path)
         raise InvalidResumeError("上传的文件似乎不是一份有效的简历")
 
-    
-    txt_path = save_txt(resume_id, text)
-    logger.info("Processed upload: resume_id=%s, txt=%s", resume_id, txt_path.name)
+    logger.info("Processed upload: resume_id=%s", resume_id)
     
     return UploadResult(
         resume_id=resume_id,
         text=text,
-        txt_path=f"storage/txts/{txt_path.name}",
     )
 
 
@@ -122,7 +124,6 @@ def process_single_file_in_batch(
         return {
             "resume_id": result.resume_id,
             "filename": filename,
-            "txt_path": result.txt_path,
         }, None
     except (InvalidFileType, FileSizeError, EncryptedPDFError, CorruptedPDFError, DocumentExtractError) as exc:
         logger.error("[BATCH] %s: %s", filename, exc)

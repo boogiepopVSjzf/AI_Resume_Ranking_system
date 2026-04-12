@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 
 from utils.constants import (
     ALLOWED_EXTENSIONS,
@@ -12,13 +13,14 @@ from utils.constants import (
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(BASE_DIR / ".env")
 
 
-
-STORAGE_DIR = BASE_DIR / "storage"
-UPLOAD_DIR = STORAGE_DIR / "uploads"
-TXT_DIR = STORAGE_DIR / "txts"
-RESULTS_DIR = STORAGE_DIR / "results"
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 # Primary LLM: Aliyun Dashscope (for feature_jzf compatibility)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
@@ -42,3 +44,25 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/com
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:1.5b")
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
+
+# Embedding (sentence-transformers)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
+
+# Database persistence
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DATABASE_SSLMODE = os.getenv("DATABASE_SSLMODE", "require").strip() or "require"
+ENABLE_DB_PERSISTENCE = _env_bool("ENABLE_DB_PERSISTENCE", bool(DATABASE_URL))
+DB_AUTO_INIT = _env_bool("DB_AUTO_INIT", True)
+
+# AWS S3
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+AWS_REGION = os.getenv("AWS_REGION", "").strip()
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "").strip()
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "").strip() or None
+ENABLE_S3_STORAGE = _env_bool(
+    "ENABLE_S3_STORAGE",
+    bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_REGION and S3_BUCKET_NAME),
+)

@@ -89,7 +89,11 @@ Rules:
 2. Do not wrap the JSON in markdown.
 3. Do not invent information that is not explicitly supported by the text.
 4. If a field is missing, use null for scalar fields and [] for list fields.
-5. Follow this JSON schema exactly:
+5. This is an English-only system. Use English enum values exactly as required by the schema.
+6. For education_level, choose exactly one of: "high_school", "associate", "bachelor", "master", "phd", "other".
+7. For major, choose exactly one of: "computer_science", "mathematics", "medicine", "finance", "engineering", "other".
+8. Keep education[].major as the original major text from the resume when present. Use the top-level `major` field for the standardized category.
+9. Follow this JSON schema exactly:
 
 {json.dumps(schema_dict, ensure_ascii=False, indent=2)}
 
