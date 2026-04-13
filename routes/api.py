@@ -23,7 +23,11 @@ from services.job_context_service import (
 from services.job_query_rewrite_service import rewrite_merged_context
 from services.job_query_rewrite_service import embed_search_query
 from services.resume_storage_bundle import build_resume_storage_bundle
-from storage.postgres_store import save_resume_bundle
+from storage.postgres_store import (
+    query_resume_ids_by_hard_filters,
+    query_similar_resumes,
+    save_resume_bundle,
+)
 from storage.s3_storage import upload_resume_source_file
 
 from utils.constants import (
@@ -48,6 +52,11 @@ from utils.errors import (
     LLMParseError,
 )
 from utils.logger import get_logger
+from schemas.job_query import (
+    HardFilters,
+    VectorRetrieveRequest,
+    VectorRetrieveResponse,
+)
 from schemas.models import ExtractionInput
 
 router = APIRouter()
@@ -212,6 +221,9 @@ def index():
             "/api/parse/batch",
             "/api/job-context",
             "/api/query-rewrite",
+            "/api/hard_filter_sql",
+            "/api/vector_retrieve",
+            "/api/rag-search",
         ],
     })
 
@@ -345,4 +357,95 @@ async def query_rewrite(payload: dict):
         "search_query": query.search_query,
         "search_query_embedding": embed_search_query(query),
         "usage": usage,
+    })
+
+
+@router.post("/api/hard_filter_sql")
+async def hard_filter_sql(payload: dict):
+    """Apply hard_filters to Postgres and return matching resume IDs."""
+    try:
+        hard_filters = HardFilters.model_validate(payload)
+        resume_ids = query_resume_ids_by_hard_filters(hard_filters)
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        "hard_filters": hard_filters.model_dump(),
+        "resume_ids": resume_ids,
+        "count": len(resume_ids),
+    })
+
+
+@router.post("/api/vector_retrieve")
+async def vector_retrieve(payload: dict):
+    """Rank candidate resumes by vector similarity inside a filtered candidate pool."""
+    try:
+        request_model = VectorRetrieveRequest.model_validate(payload)
+        results = query_similar_resumes(
+            resume_ids=request_model.resume_ids,
+            search_query_embedding=request_model.search_query_embedding,
+            top_k=request_model.top_k,
+        )
+        response = VectorRetrieveResponse(
+            search_query=request_model.search_query,
+            top_k=request_model.top_k,
+            count=len(results),
+            results=results,
+        )
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse(response.model_dump())
+
+
+@router.post("/api/rag-search")
+async def rag_search(
+    hr_note: str = Form(""),
+    jd_text: str = Form(""),
+    jd_file: Optional[UploadFile] = File(None),
+    top_k: int = Form(10),
+):
+    """End-to-end retrieval pipeline: job context -> query rewrite -> hard filter -> vector retrieval."""
+    if top_k <= 0:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="top_k must be a positive integer",
+        )
+
+    jd_file_content: Optional[bytes] = None
+    if jd_file is not None:
+        raw = await jd_file.read()
+        if raw:
+            jd_file_content = raw
+
+    try:
+        jd_body = resolve_jd_body(jd_text, jd_file_content)
+        context_result = build_job_context(hr_note, jd_body)
+        query, query_usage = rewrite_merged_context(context_result["merged_context"])
+        search_query_embedding = embed_search_query(query)
+        if not search_query_embedding:
+            raise DatabaseError("search_query_embedding is empty")
+
+        filtered_resume_ids = query_resume_ids_by_hard_filters(query.hard_filters)
+        vector_results = query_similar_resumes(
+            resume_ids=filtered_resume_ids,
+            search_query_embedding=search_query_embedding,
+            top_k=top_k,
+        )
+    except JDSourceConflict as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except JobContextEmpty as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        "hard_filters": query.hard_filters.model_dump(),
+        "search_query": query.search_query,
+        "search_query_embedding": search_query_embedding,
+        "filtered_resume_ids": filtered_resume_ids,
+        "top_k": top_k,
+        "top_k_resume_ids": [item.resume_id for item in vector_results],
+        "count": len(vector_results),
+        "query_usage": query_usage,
     })

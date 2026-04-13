@@ -4,6 +4,7 @@ import json
 from typing import Any, Optional
 
 from config import settings
+from schemas.job_query import HardFilters, VectorRetrieveResult
 from services.resume_rag_split import (
     normalize_major,
     normalize_skill,
@@ -15,6 +16,13 @@ from utils.logger import get_logger
 logger = get_logger("postgres_store")
 
 _SCHEMA_READY = False
+_EDUCATION_RANK = {
+    "high_school": 1,
+    "associate": 2,
+    "bachelor": 3,
+    "master": 4,
+    "phd": 5,
+}
 
 
 def _extract_scalar(raw_json: dict[str, Any], field: str) -> Optional[str]:
@@ -85,6 +93,91 @@ def _connect():
         )
     except Exception as exc:
         raise DatabaseError(f"Failed to connect to Postgres: {exc}") from exc
+
+
+def _normalized_query_skills(skills: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for skill in skills:
+        normalized = normalize_skill(skill)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _build_hard_filter_query(hard_filters: HardFilters) -> tuple[str, dict[str, Any]]:
+    where_clauses = ["1=1"]
+    params: dict[str, Any] = {}
+
+    if hard_filters.min_yoe is not None:
+        where_clauses.append("yoe_num is not null and yoe_num >= %(min_yoe)s")
+        params["min_yoe"] = hard_filters.min_yoe
+
+    if hard_filters.major is not None:
+        where_clauses.append("major = %(major)s")
+        params["major"] = hard_filters.major
+
+    if hard_filters.education_level is not None:
+        if hard_filters.education_level == "other":
+            where_clauses.append("education_level = %(education_level)s")
+            params["education_level"] = hard_filters.education_level
+        else:
+            min_rank = _EDUCATION_RANK.get(hard_filters.education_level)
+            if min_rank is not None:
+                where_clauses.append(
+                    """
+                    (
+                        case education_level
+                            when 'high_school' then 1
+                            when 'associate' then 2
+                            when 'bachelor' then 3
+                            when 'master' then 4
+                            when 'phd' then 5
+                            else 0
+                        end
+                    ) >= %(education_rank)s
+                    """
+                )
+                params["education_rank"] = min_rank
+
+    skills = _normalized_query_skills(hard_filters.required_skills)
+    if skills:
+        min_skill_matches = len(skills) if len(skills) < 3 else 3
+        where_clauses.append(
+            """
+            (
+                select count(*)
+                from unnest(%(required_skills)s::text[]) as required_skill(skill)
+                where required_skill.skill = any(coalesce(skills, '{}'::text[]))
+            ) >= %(min_skill_matches)s
+            """
+        )
+        params["required_skills"] = skills
+        params["min_skill_matches"] = min_skill_matches
+
+    query = f"""
+        select resume_id
+        from (
+            select
+                resume_id,
+                row_number() over (
+                    partition by
+                        case
+                            when coalesce(trim(email), '') <> '' and coalesce(trim(name), '') <> ''
+                                then lower(trim(email)) || '|' || lower(trim(name))
+                            else resume_id
+                        end
+                    order by created_at desc
+                ) as rn,
+                created_at
+            from resumes
+            where {' and '.join(where_clauses)}
+        ) deduped
+        where rn = 1
+        order by created_at desc
+    """
+    return query, params
 
 
 def _ensure_schema(conn, embedding_dimension: int) -> None:
@@ -311,3 +404,69 @@ def save_resume_bundle(
         except Exception as exc:
             conn.rollback()
             raise DatabaseError(f"Failed to save resume bundle: {exc}") from exc
+
+
+def query_resume_ids_by_hard_filters(hard_filters: HardFilters) -> list[str]:
+    """Return resume IDs that satisfy the first-stage SQL hard filters."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        query, params = _build_hard_filter_query(hard_filters)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            return [row[0] for row in rows]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to query resume ids by hard filters: {exc}") from exc
+
+
+def query_similar_resumes(
+    *,
+    resume_ids: list[str],
+    search_query_embedding: list[float],
+    top_k: int = 10,
+) -> list[VectorRetrieveResult]:
+    """Rank candidate resumes by vector similarity within a filtered candidate pool."""
+    if not resume_ids:
+        return []
+    if not search_query_embedding:
+        raise DatabaseError("search_query_embedding cannot be empty")
+    if top_k <= 0:
+        raise DatabaseError("top_k must be a positive integer")
+
+    query = """
+        select
+            resume_id,
+            1 - (embedding <=> %(query_embedding)s::vector) as similarity_score,
+            metadata,
+            raw_json
+        from resumes
+        where resume_id = any(%(resume_ids)s::text[])
+          and embedding is not null
+        order by embedding <=> %(query_embedding)s::vector
+        limit %(top_k)s
+    """
+
+    params = {
+        "query_embedding": _vector_literal(search_query_embedding),
+        "resume_ids": resume_ids,
+        "top_k": top_k,
+    }
+
+    with _connect() as conn:
+        _ensure_schema(conn, len(search_query_embedding))
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            return [
+                VectorRetrieveResult(
+                    resume_id=row[0],
+                    similarity_score=float(row[1]) if row[1] is not None else 0.0,
+                    metadata=row[2] if isinstance(row[2], dict) else {},
+                    raw_json=row[3] if isinstance(row[3], dict) else {},
+                )
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to query similar resumes: {exc}") from exc
