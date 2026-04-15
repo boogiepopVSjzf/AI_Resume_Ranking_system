@@ -29,6 +29,20 @@ from storage.postgres_store import (
     save_resume_bundle,
 )
 from storage.s3_storage import upload_resume_source_file
+from schemas.scoring_api import LLMScoringApiRequest as LLMScoringRequest
+from schemas.llm_score import ScoreSchema
+
+
+from schemas.llm_score import ScoreSchema
+from schemas.llm_explain import ExplanationSchemaConfig
+from services.llm_scoring_service import (
+    LLMScoringService,
+)
+
+from fastapi import HTTPException
+
+from schemas.scoring_api import LLMScoringApiRequest
+from services.llm_scoring_service import LLMScoringService
 
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
@@ -58,6 +72,17 @@ from schemas.job_query import (
     VectorRetrieveResponse,
 )
 from schemas.models import ExtractionInput
+
+
+from services.llm_scoring_service import (
+    LLMScoringService,
+)
+from schemas.llm_score import LLMScoringBatchRequest
+from services.llm_scoring_service import LLMScoringService
+
+from fastapi import HTTPException
+
+from schemas.scoring_api import LLMScoringApiRequest
 
 router = APIRouter()
 logger = get_logger("api")
@@ -449,3 +474,38 @@ async def rag_search(
         "count": len(vector_results),
         "query_usage": query_usage,
     })
+
+
+@router.post("/api/llm_scoring")
+async def llm_scoring_api(payload: LLMScoringApiRequest):
+    """
+    Score one or more resume JSON objects against one JD JSON object.
+
+    Provide following in the request payload:
+    - resumes(json)
+    - jd(json)
+    - schema_key(under config for now)
+    - optional provider/model
+
+    """
+    try:
+        service = LLMScoringService()
+
+        results = service.score_resumes_against_jd(
+            resumes=payload.resumes,
+            jd=payload.jd,
+            schema_key=payload.schema_key,
+            provider=payload.provider,
+            model=payload.model,
+        )
+
+        return {
+            "schema_key": payload.schema_key,
+            "count": len(results),
+            "results": [item.model_dump() for item in results],
+        }
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
