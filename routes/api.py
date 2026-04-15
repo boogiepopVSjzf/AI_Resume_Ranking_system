@@ -23,11 +23,13 @@ from services.job_context_service import (
 from services.job_query_rewrite_service import rewrite_merged_context
 from services.job_query_rewrite_service import embed_search_query
 from services.resume_storage_bundle import build_resume_storage_bundle
+from services.rule_schema_service import build_rule_schema_result
 from storage.postgres_store import (
     query_resume_ids_by_hard_filters,
     query_similar_resumes,
     save_resume_bundle,
 )
+from storage.rule_schema_store import save_rule_schema_result
 from storage.s3_storage import upload_resume_source_file
 
 from utils.constants import (
@@ -57,6 +59,7 @@ from schemas.job_query import (
     VectorRetrieveRequest,
     VectorRetrieveResponse,
 )
+from schemas.final_result import RuleSchemaRequest
 from schemas.models import ExtractionInput
 
 router = APIRouter()
@@ -221,6 +224,7 @@ def index():
             "/api/parse/batch",
             "/api/job-context",
             "/api/query-rewrite",
+            "/api/rule-schema",
             "/api/hard_filter_sql",
             "/api/vector_retrieve",
             "/api/rag-search",
@@ -358,6 +362,24 @@ async def query_rewrite(payload: dict):
         "search_query_embedding": embed_search_query(query),
         "usage": usage,
     })
+
+
+@router.post("/api/rule-schema")
+async def rule_schema(payload: RuleSchemaRequest):
+    """Build one rule-schema table row: id, JSON rule, LLM description, embedding, and job name."""
+    try:
+        result, _usage = build_rule_schema_result(
+            rule=payload.rule,
+            job_name=payload.job_name,
+        )
+        if settings.ENABLE_DB_PERSISTENCE:
+            save_rule_schema_result(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse(result.model_dump())
 
 
 @router.post("/api/hard_filter_sql")
