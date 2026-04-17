@@ -247,6 +247,40 @@ def _ensure_schema(conn, embedding_dimension: int) -> None:
         "create index if not exists idx_resumes_experience_json_gin on resumes using gin (experience_json)",
         "create index if not exists idx_resumes_projects_json_gin on resumes using gin (projects_json)",
         "create index if not exists idx_resumes_embedding_hnsw on resumes using hnsw (embedding vector_cosine_ops)",
+        f"""
+        create table if not exists scoring_schemas (
+            schema_id text primary key,
+            schema_name text not null,
+            rules_json jsonb not null,
+            summary text not null,
+            embedding vector({embedding_dimension}),
+            version integer not null default 1,
+            is_active boolean not null default true,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now(),
+            unique (schema_name, version)
+        )
+        """,
+        "create index if not exists idx_scoring_schemas_name on scoring_schemas (schema_name)",
+        "create index if not exists idx_scoring_schemas_active on scoring_schemas (is_active)",
+        "create index if not exists idx_scoring_schemas_embedding_hnsw on scoring_schemas using hnsw (embedding vector_cosine_ops)",
+        """
+        create table if not exists feedback_examples (
+            feedback_id text primary key,
+            schema_id text not null references scoring_schemas(schema_id) on delete cascade,
+            resume_id text not null references resumes(resume_id) on delete cascade,
+            label text not null check (label in ('excellent', 'good', 'qualified', 'bad')),
+            feedback_text text,
+            score double precision check (score is null or (score >= 0 and score <= 10)),
+            scoring_result jsonb,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_feedback_examples_schema_id on feedback_examples (schema_id)",
+        "create index if not exists idx_feedback_examples_resume_id on feedback_examples (resume_id)",
+        "create index if not exists idx_feedback_examples_label on feedback_examples (label)",
+        "create index if not exists idx_feedback_examples_schema_label on feedback_examples (schema_id, label)",
     ]
 
     try:
@@ -470,3 +504,302 @@ def query_similar_resumes(
             ]
         except Exception as exc:
             raise DatabaseError(f"Failed to query similar resumes: {exc}") from exc
+
+
+def save_scoring_schema(
+    *,
+    schema_id: str,
+    schema_name: str,
+    rules_json: dict[str, Any],
+    summary: str,
+    embedding: Optional[list[float]],
+) -> dict[str, Any]:
+    """Create a new scoring schema version and persist its rules, summary, and embedding."""
+    if not schema_id:
+        raise DatabaseError("schema_id cannot be empty")
+    if not schema_name.strip():
+        raise DatabaseError("schema_name cannot be empty")
+    if not summary.strip():
+        raise DatabaseError("summary cannot be empty")
+
+    embedding_dimension = _embedding_dimension(embedding)
+
+    with _connect() as conn:
+        _ensure_schema(conn, embedding_dimension)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select coalesce(max(version), 0) + 1
+                    from scoring_schemas
+                    where schema_name = %(schema_name)s
+                    """,
+                    {"schema_name": schema_name},
+                )
+                version = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    update scoring_schemas
+                    set is_active = false,
+                        updated_at = now()
+                    where schema_name = %(schema_name)s
+                      and is_active = true
+                    """,
+                    {"schema_name": schema_name},
+                )
+                cur.execute(
+                    """
+                    insert into scoring_schemas (
+                        schema_id,
+                        schema_name,
+                        rules_json,
+                        summary,
+                        embedding,
+                        version,
+                        is_active
+                    )
+                    values (
+                        %(schema_id)s,
+                        %(schema_name)s,
+                        %(rules_json)s::jsonb,
+                        %(summary)s,
+                        %(embedding)s::vector,
+                        %(version)s,
+                        true
+                    )
+                    """,
+                    {
+                        "schema_id": schema_id,
+                        "schema_name": schema_name,
+                        "rules_json": json.dumps(rules_json, ensure_ascii=False),
+                        "summary": summary,
+                        "embedding": _vector_literal(embedding),
+                        "version": version,
+                    },
+                )
+            conn.commit()
+            logger.info("Persisted scoring schema %s v%s", schema_name, version)
+            return {
+                "schema_id": schema_id,
+                "schema_name": schema_name,
+                "rules_json": rules_json,
+                "summary": summary,
+                "version": version,
+                "is_active": True,
+            }
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to save scoring schema: {exc}") from exc
+
+
+def find_best_scoring_schema(query_embedding: list[float]) -> dict[str, Any]:
+    """Find the active scoring schema closest to the JD/query embedding."""
+    if not query_embedding:
+        raise DatabaseError("query_embedding cannot be empty")
+
+    query = """
+        select
+            schema_id,
+            schema_name,
+            rules_json,
+            summary,
+            version,
+            1 - (embedding <=> %(query_embedding)s::vector) as similarity_score
+        from scoring_schemas
+        where is_active = true
+          and embedding is not null
+        order by embedding <=> %(query_embedding)s::vector
+        limit 1
+    """
+
+    with _connect() as conn:
+        _ensure_schema(conn, len(query_embedding))
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, {"query_embedding": _vector_literal(query_embedding)})
+                row = cur.fetchone()
+            if row is None:
+                raise DatabaseError("No active scoring schema with embedding was found")
+            return {
+                "schema_id": row[0],
+                "schema_name": row[1],
+                "rules_json": row[2] if isinstance(row[2], dict) else {},
+                "summary": row[3],
+                "version": row[4],
+                "similarity_score": float(row[5]) if row[5] is not None else 0.0,
+            }
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(f"Failed to find best scoring schema: {exc}") from exc
+
+
+def get_feedback_examples(
+    *,
+    schema_id: str,
+    limit_per_label: int = 2,
+) -> list[dict[str, Any]]:
+    """Return recent feedback examples for a schema, grouped by label with a per-label cap."""
+    if not schema_id:
+        raise DatabaseError("schema_id cannot be empty")
+    if limit_per_label <= 0:
+        return []
+
+    query = """
+        select
+            feedback_id,
+            schema_id,
+            resume_id,
+            label,
+            feedback_text,
+            score,
+            scoring_result,
+            created_at
+        from (
+            select
+                feedback_id,
+                schema_id,
+                resume_id,
+                label,
+                feedback_text,
+                score,
+                scoring_result,
+                created_at,
+                row_number() over (
+                    partition by label
+                    order by created_at desc
+                ) as rn
+            from feedback_examples
+            where schema_id = %(schema_id)s
+        ) ranked
+        where rn <= %(limit_per_label)s
+        order by label, created_at desc
+    """
+
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    query,
+                    {
+                        "schema_id": schema_id,
+                        "limit_per_label": limit_per_label,
+                    },
+                )
+                rows = cur.fetchall()
+            return [
+                {
+                    "feedback_id": row[0],
+                    "schema_id": row[1],
+                    "resume_id": row[2],
+                    "label": row[3],
+                    "feedback_text": row[4],
+                    "score": float(row[5]) if row[5] is not None else None,
+                    "scoring_result": row[6] if isinstance(row[6], dict) else None,
+                    "created_at": row[7].isoformat() if row[7] is not None else None,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to fetch feedback examples: {exc}") from exc
+
+
+def get_resumes_by_ids(resume_ids: list[str]) -> list[dict[str, Any]]:
+    """Fetch resume records used by scoring prompts."""
+    cleaned_ids = [resume_id for resume_id in resume_ids if resume_id]
+    if not cleaned_ids:
+        return []
+
+    query = """
+        select resume_id, metadata, semantic_text, raw_json
+        from resumes
+        where resume_id = any(%(resume_ids)s::text[])
+        order by array_position(%(resume_ids)s::text[], resume_id)
+    """
+
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, {"resume_ids": cleaned_ids})
+                rows = cur.fetchall()
+            return [
+                {
+                    "resume_id": row[0],
+                    "metadata": row[1] if isinstance(row[1], dict) else {},
+                    "semantic_text": row[2] or "",
+                    "raw_json": row[3] if isinstance(row[3], dict) else {},
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to fetch resumes: {exc}") from exc
+
+
+def save_scoring_feedback(
+    *,
+    feedback_id: str,
+    schema_id: str,
+    resume_id: str,
+    label: str,
+    feedback_text: Optional[str] = None,
+    score: Optional[float] = None,
+    scoring_result: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Persist human feedback for a schema/resume scoring result."""
+    if label not in {"excellent", "good", "qualified", "bad"}:
+        raise DatabaseError("label must be one of: excellent, good, qualified, bad")
+
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into feedback_examples (
+                        feedback_id,
+                        schema_id,
+                        resume_id,
+                        label,
+                        feedback_text,
+                        score,
+                        scoring_result
+                    )
+                    values (
+                        %(feedback_id)s,
+                        %(schema_id)s,
+                        %(resume_id)s,
+                        %(label)s,
+                        %(feedback_text)s,
+                        %(score)s,
+                        %(scoring_result)s::jsonb
+                    )
+                    returning created_at
+                    """,
+                    {
+                        "feedback_id": feedback_id,
+                        "schema_id": schema_id,
+                        "resume_id": resume_id,
+                        "label": label,
+                        "feedback_text": feedback_text,
+                        "score": score,
+                        "scoring_result": json.dumps(scoring_result, ensure_ascii=False)
+                        if scoring_result is not None
+                        else None,
+                    },
+                )
+                created_at = cur.fetchone()[0]
+            conn.commit()
+            return {
+                "feedback_id": feedback_id,
+                "schema_id": schema_id,
+                "resume_id": resume_id,
+                "label": label,
+                "feedback_text": feedback_text,
+                "score": score,
+                "created_at": created_at.isoformat() if created_at is not None else None,
+            }
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to save scoring feedback: {exc}") from exc

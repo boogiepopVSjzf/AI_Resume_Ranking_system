@@ -23,9 +23,16 @@ from services.job_context_service import (
 from services.job_query_rewrite_service import rewrite_merged_context
 from services.job_query_rewrite_service import embed_search_query
 from services.resume_storage_bundle import build_resume_storage_bundle
+from services.scoring_schema_service import build_scoring_schema_payload
+from services.scoring_service import score_resume_with_schema
 from storage.postgres_store import (
+    find_best_scoring_schema,
+    get_feedback_examples,
+    get_resumes_by_ids,
     query_resume_ids_by_hard_filters,
     query_similar_resumes,
+    save_scoring_feedback,
+    save_scoring_schema,
     save_resume_bundle,
 )
 from storage.s3_storage import upload_resume_source_file
@@ -210,6 +217,36 @@ def _persist_bundle_if_enabled(
     return True
 
 
+def _parse_resume_ids(raw_resume_ids: str) -> list[str]:
+    """Accept JSON array, comma-separated, or newline-separated resume IDs."""
+    if not raw_resume_ids or not raw_resume_ids.strip():
+        raise ValueError("resume_ids cannot be empty")
+
+    raw_resume_ids = raw_resume_ids.strip()
+    if raw_resume_ids.startswith("["):
+        loaded = json.loads(raw_resume_ids)
+        if not isinstance(loaded, list):
+            raise ValueError("resume_ids JSON must be an array")
+        raw_items = [str(item).strip() for item in loaded]
+    else:
+        raw_items = [
+            item.strip()
+            for line in raw_resume_ids.splitlines()
+            for item in line.split(",")
+        ]
+
+    resume_ids = []
+    seen = set()
+    for resume_id in raw_items:
+        if resume_id and resume_id not in seen:
+            seen.add(resume_id)
+            resume_ids.append(resume_id)
+
+    if not resume_ids:
+        raise ValueError("resume_ids cannot be empty")
+    return resume_ids
+
+
 @router.get("/")
 def index():
     """Health check and API navigation."""
@@ -224,6 +261,11 @@ def index():
             "/api/hard_filter_sql",
             "/api/vector_retrieve",
             "/api/rag-search",
+            "/api/scoring-schema",
+            "/api/score-resumes",
+            "/api/scoring-feedback",
+            "/api/scoring-feedback/batch",
+            "/api/scoring-search",
         ],
     })
 
@@ -448,4 +490,267 @@ async def rag_search(
         "top_k_resume_ids": [item.resume_id for item in vector_results],
         "count": len(vector_results),
         "query_usage": query_usage,
+    })
+
+
+@router.post("/api/scoring-schema")
+async def create_scoring_schema(
+    schema_name: str = Form(...),
+    rules: str = Form(...),
+):
+    """Create a scoring schema from rules text, generate summary + embedding, and persist it."""
+    schema_id = uuid4().hex
+    try:
+        payload, usage = build_scoring_schema_payload(schema_name, rules)
+        persisted = save_scoring_schema(
+            schema_id=schema_id,
+            schema_name=payload["schema_name"],
+            rules_json=payload["rules_json"],
+            summary=payload["summary"],
+            embedding=payload["embedding"],
+        )
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        **persisted,
+        "summary_embedding_generated": payload["embedding"] is not None,
+        "usage": usage,
+    })
+
+
+@router.post("/api/score-resumes")
+async def score_resumes(
+    jd_file: UploadFile = File(...),
+    resume_ids: str = Form(...),
+    hr_note: str = Form(""),
+    feedback_examples_per_label: int = Form(2),
+):
+    """Score manually selected resumes using the best-matching scoring schema.
+
+    The JD PDF is rewritten into a semantic query and embedded. That embedding is
+    matched against active scoring schemas. The selected schema, optional feedback
+    examples, and each target resume are then sent to the LLM for scoring.
+    """
+    if feedback_examples_per_label < 0:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="feedback_examples_per_label must be >= 0",
+        )
+
+    try:
+        selected_resume_ids = _parse_resume_ids(resume_ids)
+        jd_file_content = await jd_file.read()
+        if not jd_file_content:
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=ERR_FILE_EMPTY)
+
+        jd_body = resolve_jd_body("", jd_file_content)
+        context_result = build_job_context(hr_note, jd_body)
+        query, query_usage = rewrite_merged_context(context_result["merged_context"])
+        search_query_embedding = embed_search_query(query)
+        if not search_query_embedding:
+            raise DatabaseError("search_query_embedding is empty")
+
+        schema = find_best_scoring_schema(search_query_embedding)
+        feedback_examples = get_feedback_examples(
+            schema_id=schema["schema_id"],
+            limit_per_label=feedback_examples_per_label,
+        )
+        resumes = get_resumes_by_ids(selected_resume_ids)
+        found_ids = {resume["resume_id"] for resume in resumes}
+        missing_resume_ids = [
+            resume_id for resume_id in selected_resume_ids if resume_id not in found_ids
+        ]
+
+        results = []
+        scoring_usage = []
+        for resume in resumes:
+            score, usage = score_resume_with_schema(
+                schema=schema,
+                feedback_examples=feedback_examples,
+                resume=resume,
+            )
+            results.append(score.model_dump())
+            scoring_usage.append({
+                "resume_id": resume["resume_id"],
+                "usage": usage,
+            })
+    except HTTPException:
+        raise
+    except JDSourceConflict as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except JobContextEmpty as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        "schema": schema,
+        "feedback_examples_used": feedback_examples,
+        "feedback_examples_count": len(feedback_examples),
+        "feedback_examples_empty": len(feedback_examples) == 0,
+        "search_query": query.search_query,
+        "search_query_embedding": search_query_embedding,
+        "requested_resume_ids": selected_resume_ids,
+        "missing_resume_ids": missing_resume_ids,
+        "count": len(results),
+        "results": results,
+        "query_usage": query_usage,
+        "scoring_usage": scoring_usage,
+    })
+
+
+@router.post("/api/scoring-feedback")
+async def create_scoring_feedback(payload: dict):
+    """Persist human feedback for one scoring result."""
+    try:
+        feedback = save_scoring_feedback(
+            feedback_id=uuid4().hex,
+            schema_id=str(payload.get("schema_id", "")).strip(),
+            resume_id=str(payload.get("resume_id", "")).strip(),
+            label=str(payload.get("label", "")).strip().lower(),
+            feedback_text=payload.get("feedback_text"),
+            score=payload.get("score"),
+            scoring_result=payload.get("scoring_result"),
+        )
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse(feedback)
+
+
+@router.post("/api/scoring-feedback/batch")
+async def create_scoring_feedback_batch(payload: dict):
+    """Persist human feedback for multiple scoring results."""
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="items must be a non-empty list",
+        )
+
+    saved, failed = [], []
+    for item in items:
+        if not isinstance(item, dict):
+            failed.append({"item": item, "reason": "item must be an object"})
+            continue
+        try:
+            feedback = save_scoring_feedback(
+                feedback_id=uuid4().hex,
+                schema_id=str(item.get("schema_id", "")).strip(),
+                resume_id=str(item.get("resume_id", "")).strip(),
+                label=str(item.get("label", "")).strip().lower(),
+                feedback_text=item.get("feedback_text"),
+                score=item.get("score"),
+                scoring_result=item.get("scoring_result"),
+            )
+            saved.append(feedback)
+        except Exception as exc:
+            failed.append({
+                "schema_id": item.get("schema_id"),
+                "resume_id": item.get("resume_id"),
+                "reason": str(exc),
+            })
+
+    return JSONResponse({
+        "total": len(items),
+        "saved_count": len(saved),
+        "failed_count": len(failed),
+        "saved": saved,
+        "failed": failed,
+    })
+
+
+@router.post("/api/scoring-search")
+async def scoring_search(
+    hr_note: str = Form(""),
+    jd_text: str = Form(""),
+    jd_file: Optional[UploadFile] = File(None),
+    initial_top_k: int = Form(10),
+    feedback_examples_per_label: int = Form(2),
+):
+    """Full pipeline: JD/HR note -> retrieval -> schema selection -> LLM scoring."""
+    if initial_top_k <= 0:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="initial_top_k must be a positive integer",
+        )
+    if feedback_examples_per_label < 0:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="feedback_examples_per_label must be >= 0",
+        )
+
+    jd_file_content: Optional[bytes] = None
+    if jd_file is not None:
+        raw = await jd_file.read()
+        if raw:
+            jd_file_content = raw
+
+    try:
+        jd_body = resolve_jd_body(jd_text, jd_file_content)
+        context_result = build_job_context(hr_note, jd_body)
+        query, query_usage = rewrite_merged_context(context_result["merged_context"])
+        search_query_embedding = embed_search_query(query)
+        if not search_query_embedding:
+            raise DatabaseError("search_query_embedding is empty")
+
+        filtered_resume_ids = query_resume_ids_by_hard_filters(query.hard_filters)
+        retrieval_results = query_similar_resumes(
+            resume_ids=filtered_resume_ids,
+            search_query_embedding=search_query_embedding,
+            top_k=initial_top_k,
+        )
+        retrieved_resume_ids = [item.resume_id for item in retrieval_results]
+        retrieval_by_id = {
+            item.resume_id: item.model_dump()
+            for item in retrieval_results
+        }
+
+        schema = find_best_scoring_schema(search_query_embedding)
+        feedback_examples = get_feedback_examples(
+            schema_id=schema["schema_id"],
+            limit_per_label=feedback_examples_per_label,
+        )
+        resumes = get_resumes_by_ids(retrieved_resume_ids)
+
+        scored_results = []
+        scoring_usage = []
+        for resume in resumes:
+            score, usage = score_resume_with_schema(
+                schema=schema,
+                feedback_examples=feedback_examples,
+                resume=resume,
+            )
+            result = score.model_dump()
+            result["retrieval"] = retrieval_by_id.get(resume["resume_id"], {})
+            scored_results.append(result)
+            scoring_usage.append({
+                "resume_id": resume["resume_id"],
+                "usage": usage,
+            })
+
+        scored_results.sort(key=lambda item: item["score"], reverse=True)
+    except JDSourceConflict as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except JobContextEmpty as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_exception(exc)
+
+    return JSONResponse({
+        "hard_filters": query.hard_filters.model_dump(),
+        "search_query": query.search_query,
+        "search_query_embedding": search_query_embedding,
+        "filtered_resume_ids": filtered_resume_ids,
+        "initial_top_k": initial_top_k,
+        "retrieved_resume_ids": retrieved_resume_ids,
+        "schema": schema,
+        "feedback_examples_used": feedback_examples,
+        "feedback_examples_count": len(feedback_examples),
+        "feedback_examples_empty": len(feedback_examples) == 0,
+        "count": len(scored_results),
+        "results": scored_results,
+        "query_usage": query_usage,
+        "scoring_usage": scoring_usage,
     })
