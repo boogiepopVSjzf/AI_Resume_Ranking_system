@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from routes.auth import router as auth_router
 
 from config import settings
 from routes.api import router as api_router
@@ -27,6 +28,7 @@ except Exception:
 # 把各个接口封装到总服务接口上，目前提供四个接口，也就是说在前端fastapi上可以调用4个接口
 app.include_router(api_router)  # 
 app.include_router(llm_router)
+app.include_router(auth_router)
 
 
 @app.on_event("startup")

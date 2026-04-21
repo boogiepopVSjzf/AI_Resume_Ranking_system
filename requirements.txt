@@ -11,3 +11,5 @@ sentence-transformers
 psycopg[binary]==3.2.1
 python-dotenv==1.0.1
 boto3==1.37.38
+python-jose[cryptography]
+passlib[bcrypt]

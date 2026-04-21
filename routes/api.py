@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from config import settings
@@ -65,6 +65,8 @@ from schemas.job_query import (
     VectorRetrieveResponse,
 )
 from schemas.models import ExtractionInput
+from fastapi import Depends
+from auth.deps import require_hr_or_internal, require_internal
 
 router = APIRouter()
 logger = get_logger("api")
@@ -270,7 +272,7 @@ def index():
     })
 
 
-@router.post("/api/parse")
+@router.post("/api/parse", dependencies=[Depends(require_internal)])
 async def parse_resume(request: Request, file: UploadFile = File(...)):
     """Upload, convert to text, and extract structured data from a resume."""
     try:
@@ -293,7 +295,7 @@ async def parse_resume(request: Request, file: UploadFile = File(...)):
     return JSONResponse(payload)
 
 
-@router.post("/api/parse/batch")
+@router.post("/api/parse/batch", dependencies=[Depends(require_internal)])
 async def parse_resume_batch(request: Request, files: list[UploadFile] = File(...)):
     """Batch parse multiple resumes into structured data, embeddings, and DB records."""
     if len(files) > MAX_BATCH_SIZE:
@@ -336,7 +338,7 @@ async def parse_resume_batch(request: Request, files: list[UploadFile] = File(..
         "succeeded": succeeded,
         "failed": failed,
     })
-@router.post("/api/job-context")
+@router.post("/api/job-context", dependencies=[Depends(require_hr_or_internal)])
 async def submit_job_context(
     hr_note: str = Form(""),
     jd_text: str = Form(""),
@@ -377,7 +379,7 @@ async def submit_job_context(
     return JSONResponse(result)
 
 
-@router.post("/api/query-rewrite")
+@router.post("/api/query-rewrite", dependencies=[Depends(require_hr_or_internal)])
 async def query_rewrite(payload: dict):
     """Rewrite merged_context into hard_filters + search_query via LLM."""
     merged_context = payload.get("merged_context")
@@ -402,7 +404,7 @@ async def query_rewrite(payload: dict):
     })
 
 
-@router.post("/api/hard_filter_sql")
+@router.post("/api/hard_filter_sql", dependencies=[Depends(require_hr_or_internal)])
 async def hard_filter_sql(payload: dict):
     """Apply hard_filters to Postgres and return matching resume IDs."""
     try:
@@ -418,7 +420,7 @@ async def hard_filter_sql(payload: dict):
     })
 
 
-@router.post("/api/vector_retrieve")
+@router.post("/api/vector_retrieve", dependencies=[Depends(require_hr_or_internal)])
 async def vector_retrieve(payload: dict):
     """Rank candidate resumes by vector similarity inside a filtered candidate pool."""
     try:
@@ -440,7 +442,7 @@ async def vector_retrieve(payload: dict):
     return JSONResponse(response.model_dump())
 
 
-@router.post("/api/rag-search")
+@router.post("/api/rag-search", dependencies=[Depends(require_hr_or_internal)])
 async def rag_search(
     hr_note: str = Form(""),
     jd_text: str = Form(""),
@@ -493,7 +495,7 @@ async def rag_search(
     })
 
 
-@router.post("/api/scoring-schema")
+@router.post("/api/scoring-schema", dependencies=[Depends(require_internal)])
 async def create_scoring_schema(
     schema_name: str = Form(...),
     rules: str = Form(...),
