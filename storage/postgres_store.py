@@ -237,6 +237,17 @@ def _ensure_schema(conn, embedding_dimension: int) -> None:
         "alter table resumes drop column if exists location",
         "alter table resumes drop column if exists highest_education_level",
         "create index if not exists idx_resumes_email on resumes (email)",
+        """
+        create index if not exists idx_resumes_email_lower
+        on resumes (lower(trim(email)))
+        where email is not null and trim(email) <> ''
+        """,
+        """
+        create index if not exists idx_resumes_name_lower_when_email_missing
+        on resumes (lower(trim(name)))
+        where (email is null or trim(email) = '')
+          and name is not null and trim(name) <> ''
+        """,
         "create index if not exists idx_resumes_yoe_num on resumes (yoe_num)",
         "create index if not exists idx_resumes_education_level on resumes (education_level)",
         "create index if not exists idx_resumes_major on resumes (major)",
@@ -337,6 +348,37 @@ def save_resume_bundle(
 
         try:
             with conn.cursor() as cur:
+                original_resume_id = resume_id
+                if email:
+                    cur.execute(
+                        """
+                        select resume_id
+                        from resumes
+                        where lower(trim(email)) = lower(trim(%(email)s))
+                        order by updated_at desc, created_at desc
+                        limit 1
+                        """,
+                        {"email": email},
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        resume_id = row[0]
+                elif name:
+                    cur.execute(
+                        """
+                        select resume_id
+                        from resumes
+                        where (email is null or trim(email) = '')
+                          and lower(trim(name)) = lower(trim(%(name)s))
+                        order by updated_at desc, created_at desc
+                        limit 1
+                        """,
+                        {"name": name},
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        resume_id = row[0]
+
                 cur.execute(
                     """
                     insert into resumes (
@@ -434,7 +476,14 @@ def save_resume_bundle(
                     },
                 )
             conn.commit()
-            logger.info("Persisted resume %s to Postgres", resume_id)
+            if resume_id != original_resume_id:
+                logger.info(
+                    "Updated existing resume %s for duplicate candidate; discarded new resume_id %s",
+                    resume_id,
+                    original_resume_id,
+                )
+            else:
+                logger.info("Persisted resume %s to Postgres", resume_id)
         except Exception as exc:
             conn.rollback()
             raise DatabaseError(f"Failed to save resume bundle: {exc}") from exc
@@ -747,7 +796,12 @@ def save_scoring_feedback(
     score: Optional[float] = None,
     scoring_result: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Persist human feedback for a schema/resume scoring result."""
+    """Persist human feedback for a schema/resume scoring result.
+
+    Feedback is one row per schema/resume pair. If a user updates feedback for
+    the same resume under the same schema, keep the newest judgment instead of
+    accumulating duplicates.
+    """
     if label not in {"excellent", "good", "qualified", "bad"}:
         raise DatabaseError("label must be one of: excellent, good, qualified, bad")
 
@@ -755,41 +809,85 @@ def save_scoring_feedback(
         _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
         try:
             with conn.cursor() as cur:
+                params = {
+                    "feedback_id": feedback_id,
+                    "schema_id": schema_id,
+                    "resume_id": resume_id,
+                    "label": label,
+                    "feedback_text": feedback_text,
+                    "score": score,
+                    "scoring_result": json.dumps(scoring_result, ensure_ascii=False)
+                    if scoring_result is not None
+                    else None,
+                }
                 cur.execute(
                     """
-                    insert into feedback_examples (
-                        feedback_id,
-                        schema_id,
-                        resume_id,
-                        label,
-                        feedback_text,
-                        score,
-                        scoring_result
-                    )
-                    values (
-                        %(feedback_id)s,
-                        %(schema_id)s,
-                        %(resume_id)s,
-                        %(label)s,
-                        %(feedback_text)s,
-                        %(score)s,
-                        %(scoring_result)s::jsonb
-                    )
-                    returning created_at
+                    select feedback_id
+                    from feedback_examples
+                    where schema_id = %(schema_id)s
+                      and resume_id = %(resume_id)s
+                    order by updated_at desc, created_at desc
+                    limit 1
                     """,
-                    {
-                        "feedback_id": feedback_id,
-                        "schema_id": schema_id,
-                        "resume_id": resume_id,
-                        "label": label,
-                        "feedback_text": feedback_text,
-                        "score": score,
-                        "scoring_result": json.dumps(scoring_result, ensure_ascii=False)
-                        if scoring_result is not None
-                        else None,
-                    },
+                    params,
                 )
-                created_at = cur.fetchone()[0]
+                existing = cur.fetchone()
+
+                if existing is not None:
+                    feedback_id = existing[0]
+                    params["feedback_id"] = feedback_id
+                    cur.execute(
+                        """
+                        delete from feedback_examples
+                        where schema_id = %(schema_id)s
+                          and resume_id = %(resume_id)s
+                          and feedback_id <> %(feedback_id)s
+                        """,
+                        params,
+                    )
+                    cur.execute(
+                        """
+                        update feedback_examples
+                        set
+                            label = %(label)s,
+                            feedback_text = %(feedback_text)s,
+                            score = %(score)s,
+                            scoring_result = %(scoring_result)s::jsonb,
+                            updated_at = now()
+                        where feedback_id = %(feedback_id)s
+                        returning created_at, updated_at
+                        """,
+                        params,
+                    )
+                    created_at, updated_at = cur.fetchone()
+                    action = "updated"
+                else:
+                    cur.execute(
+                        """
+                        insert into feedback_examples (
+                            feedback_id,
+                            schema_id,
+                            resume_id,
+                            label,
+                            feedback_text,
+                            score,
+                            scoring_result
+                        )
+                        values (
+                            %(feedback_id)s,
+                            %(schema_id)s,
+                            %(resume_id)s,
+                            %(label)s,
+                            %(feedback_text)s,
+                            %(score)s,
+                            %(scoring_result)s::jsonb
+                        )
+                        returning created_at, updated_at
+                        """,
+                        params,
+                    )
+                    created_at, updated_at = cur.fetchone()
+                    action = "created"
             conn.commit()
             return {
                 "feedback_id": feedback_id,
@@ -798,7 +896,9 @@ def save_scoring_feedback(
                 "label": label,
                 "feedback_text": feedback_text,
                 "score": score,
+                "action": action,
                 "created_at": created_at.isoformat() if created_at is not None else None,
+                "updated_at": updated_at.isoformat() if updated_at is not None else None,
             }
         except Exception as exc:
             conn.rollback()

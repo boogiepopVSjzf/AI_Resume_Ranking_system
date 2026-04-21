@@ -32,6 +32,16 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "dashscope")
 DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", LLM_MODEL)
 
+# Role-specific LLM routing.
+# Parse and query rewrite share one LLM configuration because both tasks are
+# structured extraction/rewrite tasks that benefit from consistent JSON output.
+PARSE_QUERY_LLM_PROVIDER = os.getenv("PARSE_QUERY_LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip()
+PARSE_QUERY_LLM_MODEL = os.getenv("PARSE_QUERY_LLM_MODEL", "").strip() or None
+SCHEMA_LLM_PROVIDER = os.getenv("SCHEMA_LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip()
+SCHEMA_LLM_MODEL = os.getenv("SCHEMA_LLM_MODEL", "").strip() or None
+SCORING_LLM_PROVIDER = os.getenv("SCORING_LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip()
+SCORING_LLM_MODEL = os.getenv("SCORING_LLM_MODEL", "").strip() or None
+
 # Alternative providers (Gemini, OpenAI, Ollama)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")

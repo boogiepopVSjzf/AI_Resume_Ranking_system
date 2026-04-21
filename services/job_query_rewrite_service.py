@@ -3,6 +3,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
+from config import settings
 from schemas.job_query import StandardizedJobQuery
 from services.embedding_service import embed_text
 from services.llm_service import call_llm
@@ -59,7 +60,11 @@ def rewrite_merged_context(
         raise ValueError("merged_context is empty")
 
     prompt = _build_rewrite_prompt(merged_context)
-    raw_output, usage = call_llm(prompt, provider=provider, model=model)
+    raw_output, usage = call_llm(
+        prompt,
+        provider=provider or settings.PARSE_QUERY_LLM_PROVIDER,
+        model=model or settings.PARSE_QUERY_LLM_MODEL,
+    )
     parsed = extract_json(raw_output)
 
     try:

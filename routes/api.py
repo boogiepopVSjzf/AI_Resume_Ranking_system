@@ -247,6 +247,57 @@ def _parse_resume_ids(raw_resume_ids: str) -> list[str]:
     return resume_ids
 
 
+def _configured(value: Optional[str]) -> bool:
+    return bool(value and str(value).strip())
+
+
+def _provider_key_configured(provider: str) -> bool:
+    provider = (provider or "").lower().strip()
+    if provider == "dashscope":
+        return _configured(settings.LLM_API_KEY)
+    if provider == "gemini":
+        return _configured(settings.GEMINI_API_KEY)
+    if provider == "openai":
+        return _configured(settings.OPENAI_API_KEY)
+    if provider == "ollama":
+        return True
+    return False
+
+
+def _role_llm_status(label: str, provider: str, model: Optional[str]) -> dict:
+    provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower().strip()
+    fallback_model = {
+        "dashscope": settings.LLM_MODEL,
+        "gemini": settings.GEMINI_MODEL,
+        "openai": settings.OPENAI_MODEL,
+        "ollama": settings.OLLAMA_MODEL,
+    }.get(provider, settings.DEFAULT_LLM_MODEL)
+    return {
+        "label": label,
+        "provider": provider,
+        "model": model or fallback_model,
+        "api_key_configured": _provider_key_configured(provider),
+        "temperature": 0.1,
+    }
+
+
+def _build_system_warnings(status: dict) -> list[str]:
+    warnings = []
+    if status["database"]["enabled"] and not status["database"]["url_configured"]:
+        warnings.append("Database persistence is enabled but DATABASE_URL is missing.")
+    if status["s3"]["enabled"]:
+        if not status["s3"]["bucket_configured"]:
+            warnings.append("S3 storage is enabled but S3_BUCKET_NAME is missing.")
+        if not status["s3"]["credentials_configured"]:
+            warnings.append("S3 storage is enabled but AWS credentials are incomplete.")
+        if not status["s3"]["region_configured"]:
+            warnings.append("S3 storage is enabled but AWS_REGION is missing.")
+    for role, llm_status in status["llm_routing"].items():
+        if not llm_status["api_key_configured"]:
+            warnings.append(f"{role} uses {llm_status['provider']} but its API key is missing.")
+    return warnings
+
+
 @router.get("/")
 def index():
     """Health check and API navigation."""
@@ -266,8 +317,92 @@ def index():
             "/api/scoring-feedback",
             "/api/scoring-feedback/batch",
             "/api/scoring-search",
+            "/api/system/status",
         ],
     })
+
+
+@router.get("/api/health")
+def health_check():
+    """Stable health endpoint for the React frontend."""
+    return JSONResponse({
+        "message": "ok",
+        "docs": "/docs",
+        "endpoints": [
+            "/api/parse",
+            "/api/parse/batch",
+            "/api/job-context",
+            "/api/query-rewrite",
+            "/api/hard_filter_sql",
+            "/api/vector_retrieve",
+            "/api/rag-search",
+            "/api/scoring-schema",
+            "/api/score-resumes",
+            "/api/scoring-feedback",
+            "/api/scoring-feedback/batch",
+            "/api/scoring-search",
+            "/api/system/status",
+        ],
+    })
+
+
+@router.get("/api/system/status")
+def system_status():
+    """Return safe, read-only runtime configuration status for the frontend."""
+    status = {
+        "runtime": {
+            "mode": "read_only",
+            "env_loaded_from": str(settings.BASE_DIR / ".env"),
+            "restart_required_after_env_change": True,
+        },
+        "database": {
+            "enabled": settings.ENABLE_DB_PERSISTENCE,
+            "url_configured": _configured(settings.DATABASE_URL),
+            "sslmode": settings.DATABASE_SSLMODE,
+            "auto_init": settings.DB_AUTO_INIT,
+        },
+        "s3": {
+            "enabled": settings.ENABLE_S3_STORAGE,
+            "bucket_configured": _configured(settings.S3_BUCKET_NAME),
+            "bucket": settings.S3_BUCKET_NAME if settings.S3_BUCKET_NAME else None,
+            "region_configured": _configured(settings.AWS_REGION),
+            "region": settings.AWS_REGION if settings.AWS_REGION else None,
+            "endpoint_configured": _configured(settings.S3_ENDPOINT_URL),
+            "credentials_configured": _configured(settings.AWS_ACCESS_KEY_ID)
+            and _configured(settings.AWS_SECRET_ACCESS_KEY),
+        },
+        "llm_routing": {
+            "parse_query": _role_llm_status(
+                "Parse + Query",
+                settings.PARSE_QUERY_LLM_PROVIDER,
+                settings.PARSE_QUERY_LLM_MODEL,
+            ),
+            "schema": _role_llm_status(
+                "Schema",
+                settings.SCHEMA_LLM_PROVIDER,
+                settings.SCHEMA_LLM_MODEL,
+            ),
+            "scoring": _role_llm_status(
+                "Scoring",
+                settings.SCORING_LLM_PROVIDER,
+                settings.SCORING_LLM_MODEL,
+            ),
+        },
+        "embedding": {
+            "model": settings.EMBEDDING_MODEL,
+            "device": settings.EMBEDDING_DEVICE,
+            "dimension": settings.EMBEDDING_DIMENSION,
+            "preload": settings.PRELOAD_EMBEDDING_MODEL,
+            "include_embedding_in_response": settings.INCLUDE_EMBEDDING_IN_RESPONSE,
+        },
+        "limits": {
+            "allowed_extensions": sorted(settings.ALLOWED_EXTENSIONS),
+            "max_upload_mb": settings.MAX_UPLOAD_MB,
+            "max_batch_size": MAX_BATCH_SIZE,
+        },
+    }
+    status["warnings"] = _build_system_warnings(status)
+    return JSONResponse(status)
 
 
 @router.post("/api/parse")

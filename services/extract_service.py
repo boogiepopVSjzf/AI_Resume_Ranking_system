@@ -5,6 +5,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
+from config import settings
 from schemas.models import ExtractionInput, ResumeStructured
 from utils.errors import LLMParseError, NotResumeError
 from services.llm_service import call_llm
@@ -117,7 +118,11 @@ def extract_structured_resume(
         raise NotResumeError("Input text does not look like a resume")
 
     prompt = _build_prompt(data.text)
-    raw_output, usage = call_llm(prompt, provider=provider, model=model)
+    raw_output, usage = call_llm(
+        prompt,
+        provider=provider or settings.PARSE_QUERY_LLM_PROVIDER,
+        model=model or settings.PARSE_QUERY_LLM_MODEL,
+    )
     parsed = extract_json(raw_output)
 
     try:

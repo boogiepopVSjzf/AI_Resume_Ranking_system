@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -11,6 +12,17 @@ from utils.logger import get_logger
 
 app = FastAPI()  #主接口，用于把后续接口集合挂载上去
 logger = get_logger("main")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 后续写前端接口就在这里挂载上去，目前没有就直接pass
 try:   

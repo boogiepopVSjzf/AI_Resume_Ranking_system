@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any, Optional
 
+from config import settings
 from services.embedding_service import embed_text
 from services.llm_service import call_llm
 from utils.errors import LLMParseError
@@ -16,6 +17,7 @@ _RULE_HEADER_RE = re.compile(
 _WEIGHT_RE = re.compile(
     r"(?i)\bweight\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%?|\(\s*(\d+(?:\.\d+)?)\s*%\s*\)"
 )
+_WEIGHT_SUM_TOLERANCE = 0.0001
 
 
 def parse_rules_text(rules_text: str) -> dict[str, Any]:
@@ -45,6 +47,12 @@ def parse_rules_text(rules_text: str) -> dict[str, Any]:
 
     if not rules_json:
         raise ValueError("rules must be provided as rules1:, rules2:, rules3:, ...")
+
+    weight_sum = sum(rule["weight"] for rule in rules_json.values())
+    if abs(weight_sum - 1.0) > _WEIGHT_SUM_TOLERANCE:
+        raise ValueError(
+            f"rule weights must add up to 100%; current total is {round(weight_sum * 100, 4)}%"
+        )
 
     return rules_json
 
@@ -103,7 +111,11 @@ Summary:
 
 def summarize_rules(schema_name: str, rules_json: dict[str, Any]) -> tuple[str, dict]:
     prompt = build_schema_summary_prompt(schema_name, rules_json)
-    summary, usage = call_llm(prompt)
+    summary, usage = call_llm(
+        prompt,
+        provider=settings.SCHEMA_LLM_PROVIDER,
+        model=settings.SCHEMA_LLM_MODEL,
+    )
     summary = summary.strip()
     if not summary:
         raise LLMParseError("LLM returned an empty scoring schema summary")
