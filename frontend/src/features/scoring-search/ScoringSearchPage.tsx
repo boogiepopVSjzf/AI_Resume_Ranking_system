@@ -1,12 +1,13 @@
 import { ChangeEvent, useMemo, useState } from "react";
 import { runScoringSearch, submitScoringFeedback } from "./scoringSearchApi";
 import type {
+  FeedbackInfluenceMode,
   FeedbackLabel,
   ScoringResult,
   ScoringSearchResponse,
 } from "./scoringSearchTypes";
 
-const FEEDBACK_LABELS: FeedbackLabel[] = ["excellent", "good", "qualified", "bad"];
+const FEEDBACK_LABELS: FeedbackLabel[] = ["excellent", "good", "qualified", "bad", "n/a"];
 
 function formatPercent(value?: number) {
   if (typeof value !== "number") return "n/a";
@@ -39,6 +40,8 @@ export function ScoringSearchPage() {
   const [hrNote, setHrNote] = useState("");
   const [initialTopK, setInitialTopK] = useState("5");
   const [feedbackExamplesPerLabel, setFeedbackExamplesPerLabel] = useState("2");
+  const [feedbackInfluenceMode, setFeedbackInfluenceMode] =
+    useState<FeedbackInfluenceMode>("on");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<ScoringSearchResponse | null>(null);
   const [runtimeSeconds, setRuntimeSeconds] = useState<number | null>(null);
@@ -92,6 +95,7 @@ export function ScoringSearchPage() {
         hrNote,
         initialTopK: Number(initialTopK),
         feedbackExamplesPerLabel: Number(feedbackExamplesPerLabel),
+        feedbackInfluenceMode,
       });
       setResult(response);
     } catch (err) {
@@ -188,6 +192,20 @@ export function ScoringSearchPage() {
                 inputMode="numeric"
               />
             </label>
+            <label className="inline-control">
+              <span>Feedback influence</span>
+              <button
+                type="button"
+                className={`switch-control ${feedbackInfluenceMode === "on" ? "active" : ""}`}
+                aria-pressed={feedbackInfluenceMode === "on"}
+                onClick={() =>
+                  setFeedbackInfluenceMode((current) => (current === "on" ? "off" : "on"))
+                }
+              >
+                <span />
+                <strong>{feedbackInfluenceMode === "on" ? "On" : "Off"}</strong>
+              </button>
+            </label>
           </div>
 
           <button
@@ -224,7 +242,9 @@ export function ScoringSearchPage() {
             <div className="schema-match-card">
               <span>Matched schema</span>
               <strong>{result.schema.schema_name}</strong>
-              <small>{result.feedback_examples_count} examples</small>
+              <small>
+                {result.feedback_examples_count} examples · {result.feedback_influence_mode}
+              </small>
             </div>
           )}
         </aside>
@@ -286,9 +306,22 @@ export function ScoringSearchPage() {
                             <strong>{formatScore(rule.score)} / 10</strong>
                           </div>
                           <p>{rule.reason}</p>
+                          {rule.feedback_influence && (
+                            <small>
+                              {rule.feedback_used ? "Feedback used" : "Feedback not used"} ·{" "}
+                              {rule.feedback_influence}
+                            </small>
+                          )}
                         </article>
                       ))}
                     </div>
+                  )}
+
+                  {scoreResult.feedback_usage_summary && (
+                    <details className="overall-note">
+                      <summary>Feedback influence</summary>
+                      <p>{scoreResult.feedback_usage_summary.overall_influence}</p>
+                    </details>
                   )}
 
                   <details className="overall-note">
