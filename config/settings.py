@@ -56,7 +56,7 @@ OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generat
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 
 # Embedding (sentence-transformers)
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
 EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
 PRELOAD_EMBEDDING_MODEL = _env_bool("PRELOAD_EMBEDDING_MODEL", False)

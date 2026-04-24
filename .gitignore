@@ -20,3 +20,12 @@ frontend/dist/
 
 # 忽略 storage 下的运行时缓存
 storage/__pycache__/
+
+# 离线 embedding / rerank 评测输出（不提交到仓库）
+embedding_eval_out/
+embedding_eval_runs/
+embedding_eval_runs_size_compare/
+rerank_eval_runs*/
+
+# 离线评测 sandbox（脚本、金标、本地样例等；需要进仓库时再单独放开）
+data_sandbox/

@@ -134,4 +134,4 @@ class TestSearchQueryEmbedding:
         embedding = embed_search_query(query)
 
         assert embedding == [0.1, 0.2, 0.3]
-        mock_embed.assert_called_once_with(query.search_query)
+        mock_embed.assert_called_once_with(query.search_query, for_query=True)

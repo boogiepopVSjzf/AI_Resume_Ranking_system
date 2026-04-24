@@ -82,4 +82,4 @@ def rewrite_merged_context(
 
 def embed_search_query(query: StandardizedJobQuery) -> Optional[list[float]]:
     """Embed the semantic search_query text for vector retrieval."""
-    return embed_text(query.search_query)
+    return embed_text(query.search_query, for_query=True)
