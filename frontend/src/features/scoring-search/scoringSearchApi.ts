@@ -1,17 +1,23 @@
 import { API_BASE_URL } from "../../lib/constants";
-import type { FeedbackPayload, ScoringSearchResponse } from "./scoringSearchTypes";
+import type {
+  FeedbackInfluenceMode,
+  FeedbackPayload,
+  ScoringSearchResponse,
+} from "./scoringSearchTypes";
 
 export async function runScoringSearch(input: {
   jdFile: File;
   hrNote: string;
   initialTopK: number;
   feedbackExamplesPerLabel: number;
+  feedbackInfluenceMode: FeedbackInfluenceMode;
 }): Promise<ScoringSearchResponse> {
   const formData = new FormData();
   formData.append("jd_file", input.jdFile);
   formData.append("hr_note", input.hrNote);
   formData.append("initial_top_k", String(input.initialTopK));
   formData.append("feedback_examples_per_label", String(input.feedbackExamplesPerLabel));
+  formData.append("feedback_influence_mode", input.feedbackInfluenceMode);
 
   const response = await fetch(`${API_BASE_URL}/api/scoring-search`, {
     method: "POST",

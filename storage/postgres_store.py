@@ -280,13 +280,19 @@ def _ensure_schema(conn, embedding_dimension: int) -> None:
             feedback_id text primary key,
             schema_id text not null references scoring_schemas(schema_id) on delete cascade,
             resume_id text not null references resumes(resume_id) on delete cascade,
-            label text not null check (label in ('excellent', 'good', 'qualified', 'bad')),
+            label text not null check (label in ('excellent', 'good', 'qualified', 'bad', 'n/a')),
             feedback_text text,
             score double precision check (score is null or (score >= 0 and score <= 10)),
             scoring_result jsonb,
             created_at timestamptz not null default now(),
             updated_at timestamptz not null default now()
         )
+        """,
+        "alter table feedback_examples drop constraint if exists feedback_examples_label_check",
+        """
+        alter table feedback_examples
+        add constraint feedback_examples_label_check
+        check (label in ('excellent', 'good', 'qualified', 'bad', 'n/a'))
         """,
         "create index if not exists idx_feedback_examples_schema_id on feedback_examples (schema_id)",
         "create index if not exists idx_feedback_examples_resume_id on feedback_examples (resume_id)",
@@ -526,7 +532,7 @@ def query_similar_resumes(
         from resumes
         where resume_id = any(%(resume_ids)s::text[])
           and embedding is not null
-        order by embedding <=> %(query_embedding)s::vector
+        order by embedding <=> %(query_embedding)s::vector, resume_id
         limit %(top_k)s
     """
 
@@ -657,7 +663,7 @@ def find_best_scoring_schema(query_embedding: list[float]) -> dict[str, Any]:
         from scoring_schemas
         where is_active = true
           and embedding is not null
-        order by embedding <=> %(query_embedding)s::vector
+        order by embedding <=> %(query_embedding)s::vector, schema_name, version desc, schema_id
         limit 1
     """
 
@@ -716,13 +722,13 @@ def get_feedback_examples(
                 created_at,
                 row_number() over (
                     partition by label
-                    order by created_at desc
+                    order by created_at desc, feedback_id
                 ) as rn
             from feedback_examples
             where schema_id = %(schema_id)s
         ) ranked
         where rn <= %(limit_per_label)s
-        order by label, created_at desc
+        order by label, created_at desc, feedback_id
     """
 
     with _connect() as conn:
@@ -802,8 +808,8 @@ def save_scoring_feedback(
     the same resume under the same schema, keep the newest judgment instead of
     accumulating duplicates.
     """
-    if label not in {"excellent", "good", "qualified", "bad"}:
-        raise DatabaseError("label must be one of: excellent, good, qualified, bad")
+    if label not in {"excellent", "good", "qualified", "bad", "n/a"}:
+        raise DatabaseError("label must be one of: excellent, good, qualified, bad, n/a")
 
     with _connect() as conn:
         _ensure_schema(conn, settings.EMBEDDING_DIMENSION)

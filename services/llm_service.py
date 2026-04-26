@@ -84,8 +84,7 @@ def _call_gemini(prompt: str, model: str) -> tuple[str, dict]:
             }
         ],
         "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 2048,
+            "temperature": settings.LLM_TEMPERATURE,
             "responseMimeType": "application/json",
         },
     }
@@ -129,7 +128,7 @@ def _call_openai(prompt: str, model: str) -> tuple[str, dict]:
         "messages": [
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
+        "temperature": settings.LLM_TEMPERATURE,
     }
 
     try:
@@ -161,6 +160,9 @@ def _call_ollama(prompt: str, model: str) -> tuple[str, dict]:
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "options": {
+            "temperature": settings.LLM_TEMPERATURE,
+        },
     }
 
     try:
@@ -202,7 +204,7 @@ def _call_dashscope(prompt: str, model: str) -> tuple[str, dict]:
         "messages": [
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
+        "temperature": settings.LLM_TEMPERATURE,
     }
 
     try:
