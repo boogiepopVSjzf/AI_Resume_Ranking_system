@@ -28,6 +28,7 @@ class VectorRetrieveRequest(BaseModel):
 class VectorRetrieveResult(BaseModel):
     resume_id: str
     similarity_score: float
+    reranker_score: Optional[float] = None
     metadata: dict = Field(default_factory=dict)
     raw_json: dict = Field(default_factory=dict)
 

@@ -8,6 +8,7 @@ export type RuleScore = {
 };
 
 export type FeedbackInfluenceMode = "off" | "on";
+export type FilterMode = "strict" | "balanced" | "semantic_only";
 
 export type FeedbackUsageSummary = {
   mode: FeedbackInfluenceMode;
@@ -18,6 +19,7 @@ export type FeedbackUsageSummary = {
 
 export type ScoringResult = {
   resume_id: string;
+  candidate_name?: string;
   score: number;
   rule_scores?: Record<string, RuleScore>;
   feedback_usage_summary?: FeedbackUsageSummary;
@@ -44,6 +46,13 @@ export type ScoringSearchResponse = {
   schema: ScoringSchema;
   feedback_examples_count: number;
   feedback_influence_mode: FeedbackInfluenceMode;
+  filter_mode: FilterMode;
+  applied_hard_filters?: {
+    min_yoe?: number | null;
+    required_skills?: string[];
+    education_level?: string | null;
+    major?: string | null;
+  };
   search_query: string;
   filtered_resume_count?: number;
   retrieved_resume_ids?: string[];

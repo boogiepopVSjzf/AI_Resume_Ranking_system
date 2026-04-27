@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "../../lib/constants";
 import type {
+  FilterMode,
   FeedbackInfluenceMode,
   FeedbackPayload,
   ScoringSearchResponse,
@@ -9,6 +10,7 @@ export async function runScoringSearch(input: {
   jdFile: File;
   hrNote: string;
   initialTopK: number;
+  filterMode: FilterMode;
   feedbackExamplesPerLabel: number;
   feedbackInfluenceMode: FeedbackInfluenceMode;
 }): Promise<ScoringSearchResponse> {
@@ -16,6 +18,7 @@ export async function runScoringSearch(input: {
   formData.append("jd_file", input.jdFile);
   formData.append("hr_note", input.hrNote);
   formData.append("initial_top_k", String(input.initialTopK));
+  formData.append("filter_mode", input.filterMode);
   formData.append("feedback_examples_per_label", String(input.feedbackExamplesPerLabel));
   formData.append("feedback_influence_mode", input.feedbackInfluenceMode);
 

@@ -7,6 +7,7 @@ from config import settings
 from routes.api import router as api_router
 from routes.llm import routes as llm_router
 from services.embedding_service import preload_embedding_model
+from services.reranker_service import preload_reranker_model
 from utils.errors import InvalidFileType
 from utils.logger import get_logger
 
@@ -43,13 +44,19 @@ app.include_router(llm_router)
 
 @app.on_event("startup")
 def startup_tasks() -> None:
-    if not settings.PRELOAD_EMBEDDING_MODEL:
-        return
-    try:
-        preload_embedding_model()
-        logger.info("Embedding model preloaded at startup")
-    except Exception as exc:
-        logger.warning("Embedding model preload skipped: %s", exc)
+    if settings.PRELOAD_EMBEDDING_MODEL:
+        try:
+            preload_embedding_model()
+            logger.info("Embedding model preloaded at startup")
+        except Exception as exc:
+            logger.warning("Embedding model preload skipped: %s", exc)
+
+    if settings.PRELOAD_RERANKER_MODEL:
+        try:
+            preload_reranker_model()
+            logger.info("Reranker model preloaded at startup")
+        except Exception as exc:
+            logger.warning("Reranker model preload skipped: %s", exc)
 
 
 @app.exception_handler(InvalidFileType) #如果整个服务运行过程中出现 InvalidFileType 这个异常，就交给下面那个函数处理 ，而不是让程序崩掉或返回默认的 500。

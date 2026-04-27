@@ -13,11 +13,29 @@ from utils.llm_json import extract_json
 FEEDBACK_INFLUENCE_MODES = {"off", "on"}
 
 FEEDBACK_LABEL_MEANINGS = {
-    "excellent": "Human believes this resume strongly satisfies the schema and should score near the top.",
-    "good": "Human believes this resume satisfies most schema requirements with minor gaps.",
-    "qualified": "Human believes this resume is acceptable but has meaningful gaps.",
-    "bad": "Human believes this resume should receive a low score for this schema.",
-    "n/a": "Human did not provide a scoring judgment. This is stored for audit only and must not calibrate scoring.",
+    "excellent": (
+        "Human believes this resume is a clearly strong match for the schema. "
+        "It should rank near the top because it satisfies the most important rules "
+        "with strong evidence and only limited weaknesses."
+    ),
+    "good": (
+        "Human believes this resume is a solid match for the schema. "
+        "It satisfies most important rules, but still has noticeable gaps, weaker evidence, "
+        "or less depth than an excellent resume."
+    ),
+    "qualified": (
+        "Human believes this resume is acceptable and could move forward, "
+        "but it only meets the minimum bar or has meaningful weaknesses under multiple rules."
+    ),
+    "bad": (
+        "Human believes this resume is a weak match for the schema. "
+        "It misses important requirements, lacks convincing evidence under key rules, "
+        "or should not rank highly against stronger candidates."
+    ),
+    "n/a": (
+        "Human did not provide a scoring judgment. "
+        "This label is audit-only and must never be used as a scoring calibration signal."
+    ),
 }
 
 
@@ -190,11 +208,20 @@ Return feedback_used=false for every rule and an empty feedback_usage_summary.
     return """
 Feedback influence mode: on.
 You must inspect and use all usable feedback calibration examples as human preference calibration.
-The scoring schema remains the source of truth.
+The scoring schema remains the source of truth and has higher priority than feedback examples.
+Feedback examples help you understand how human reviewers interpret the schema in practice.
+Use feedback only to calibrate strictness, expectations, and what strong, borderline, or weak evidence looks like.
+Do not copy scores or labels from examples. Do not treat feedback examples as score templates.
+Do not override the schema rules simply because a feedback example looks superficially similar.
 Compare the target resume against feedback examples before finalizing each rule score.
-Use feedback when examples involve similar evidence, missing evidence, strengths, or weaknesses under the same schema.
-If a relevant human label conflicts with a prior model score, prefer the human label as the calibration signal.
-Do not copy scores from examples. Adjust only when the target resume has comparable evidence under the same rule.
+Use feedback when examples show similar strengths, weaknesses, missing evidence, or borderline evidence under the same schema.
+If a relevant human label conflicts with a prior model score in a saved example, trust the human label more than the prior model score.
+Interpret the labels this way:
+- excellent: a clearly strong match that should rank near the top
+- good: a solid match with limited but noticeable gaps
+- qualified: acceptable and can move forward, but only meets the bar with meaningful weaknesses
+- bad: a weak match that should rank low
+- n/a: not a scoring judgment and must not influence the score
 Ignore n/a examples as scoring signals because they are audit-only.
 For each rule, state whether feedback changed the score, confirmed the score, or was irrelevant.
 The feedback_usage_summary must name used_feedback_ids, ignored_feedback_ids, and the overall influence.
@@ -254,6 +281,7 @@ def build_resume_scoring_prompt(
 You are a strict resume scoring assistant.
 
 Score the target resume using only the provided scoring schema. The scoring schema rules are the source of truth.
+The final score must reflect the rules, not superficial similarity to any past example.
 
 Feedback calibration:
 {_feedback_mode_instructions(feedback_influence_mode)}
@@ -269,6 +297,14 @@ Requirements:
 8. Do not invent resume facts.
 9. Do not calculate the final weighted total score. The backend will calculate it from rule weights.
 10. explanation must summarize the overall fit and explicitly reference the schema rules or criteria.
+11. Evaluate each rule independently using resume evidence first, then use feedback only to calibrate how strict or lenient the judgment should be.
+12. If a resume resembles a feedback example but does not show comparable evidence under the rules, do not copy that example's label or implied score.
+13. The five labels reflect human judgment about real hiring reactions:
+    - excellent = strongly positive, near-top candidate
+    - good = positive, strong enough to consider seriously
+    - qualified = acceptable, but not clearly strong
+    - bad = negative, not competitive for this schema
+    - n/a = not a scoring judgment
 
 Structured feedback calibration data:
 {examples_text}

@@ -39,6 +39,13 @@ export type SystemStatusResponse = {
     preload: boolean;
     include_embedding_in_response: boolean;
   };
+  reranker: {
+    enabled: boolean;
+    model: string;
+    device: string;
+    preload: boolean;
+    candidate_pool_size: number;
+  };
   limits: {
     allowed_extensions: string[];
     max_upload_mb: number;

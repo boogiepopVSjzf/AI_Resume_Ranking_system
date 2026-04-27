@@ -62,3 +62,8 @@ class NotResumeError(AppError):
 class DatabaseError(AppError):
     """Raised when cloud database persistence fails."""
     pass
+
+
+class RerankerError(AppError):
+    """Raised when local reranker inference or loading fails."""
+    pass

@@ -80,6 +80,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
+
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:1.5b")
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
@@ -90,6 +94,13 @@ EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
 PRELOAD_EMBEDDING_MODEL = _env_bool("PRELOAD_EMBEDDING_MODEL", False)
 INCLUDE_EMBEDDING_IN_RESPONSE = _env_bool("INCLUDE_EMBEDDING_IN_RESPONSE", False)
+
+# Local reranker
+ENABLE_RERANKER = _env_bool("ENABLE_RERANKER", True)
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_DEVICE = os.getenv("RERANKER_DEVICE", "cpu")
+PRELOAD_RERANKER_MODEL = _env_bool("PRELOAD_RERANKER_MODEL", False)
+RERANKER_CANDIDATE_POOL_SIZE = _env_int("RERANKER_CANDIDATE_POOL_SIZE", 20)
 
 # Database persistence
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()

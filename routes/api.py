@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +33,7 @@ from services.scoring_service import (
     normalize_feedback_influence_mode,
     score_resume_with_schema,
 )
+from services.reranker_service import rerank_resumes
 from storage.postgres_store import (
     find_best_scoring_schema,
     get_feedback_examples,
@@ -64,6 +66,7 @@ from utils.errors import (
     InvalidResumeError,
     LLMError,
     LLMParseError,
+    RerankerError,
 )
 from utils.logger import get_logger
 from schemas.job_query import (
@@ -81,6 +84,45 @@ _QUERY_REWRITE_CACHE: OrderedDict[str, dict] = OrderedDict()
 _SCORING_CACHE: OrderedDict[str, dict] = OrderedDict()
 _SCHEMA_CACHE: OrderedDict[str, dict] = OrderedDict()
 
+
+def _normalize_filter_mode(raw_mode: str) -> str:
+    mode = (raw_mode or "strict").strip().lower()
+    if mode not in {"strict", "balanced", "semantic_only"}:
+        raise ValueError("filter_mode must be one of: strict, balanced, semantic_only")
+    return mode
+
+
+def _apply_filter_mode(hard_filters: HardFilters, filter_mode: str) -> HardFilters:
+    mode = _normalize_filter_mode(filter_mode)
+    if mode == "strict":
+        return hard_filters.model_copy(deep=True)
+    if mode == "balanced":
+        return HardFilters(
+            min_yoe=hard_filters.min_yoe,
+            required_skills=[],
+            education_level=hard_filters.education_level,
+            major=None,
+        )
+    return HardFilters()
+
+
+def _json_safe(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _retrieval_pool_size(final_top_k: int) -> int:
+    if final_top_k <= 0:
+        raise ValueError("final_top_k must be a positive integer")
+    if not settings.ENABLE_RERANKER:
+        return final_top_k
+    return max(final_top_k, settings.RERANKER_CANDIDATE_POOL_SIZE)
+
 # Exception to HTTP status code mapping
 _EXCEPTION_STATUS_MAP = {
     InvalidFileType: HTTP_400_BAD_REQUEST,
@@ -92,6 +134,7 @@ _EXCEPTION_STATUS_MAP = {
     DocumentExtractError: HTTP_422_UNPROCESSABLE_ENTITY,
     DatabaseError: HTTP_502_BAD_GATEWAY,
     LLMError: HTTP_502_BAD_GATEWAY,
+    RerankerError: HTTP_502_BAD_GATEWAY,
 }
 
 
@@ -149,6 +192,7 @@ def _parse_query_model_for_cache(provider: str, model: Optional[str]) -> str:
         return model
     provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower().strip()
     fallback_model = {
+        "anthropic": settings.ANTHROPIC_MODEL,
         "dashscope": settings.LLM_MODEL,
         "gemini": settings.GEMINI_MODEL,
         "openai": settings.OPENAI_MODEL,
@@ -162,6 +206,7 @@ def _resolved_model_for_cache(provider: str, model: Optional[str]) -> str:
         return model
     provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower().strip()
     fallback_model = {
+        "anthropic": settings.ANTHROPIC_MODEL,
         "dashscope": settings.LLM_MODEL,
         "gemini": settings.GEMINI_MODEL,
         "openai": settings.OPENAI_MODEL,
@@ -487,6 +532,8 @@ def _provider_key_configured(provider: str) -> bool:
         return _configured(settings.GEMINI_API_KEY)
     if provider == "openai":
         return _configured(settings.OPENAI_API_KEY)
+    if provider == "anthropic":
+        return _configured(settings.ANTHROPIC_API_KEY)
     if provider == "ollama":
         return True
     return False
@@ -495,6 +542,7 @@ def _provider_key_configured(provider: str) -> bool:
 def _role_llm_status(label: str, provider: str, model: Optional[str]) -> dict:
     provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower().strip()
     fallback_model = {
+        "anthropic": settings.ANTHROPIC_MODEL,
         "dashscope": settings.LLM_MODEL,
         "gemini": settings.GEMINI_MODEL,
         "openai": settings.OPENAI_MODEL,
@@ -636,6 +684,13 @@ def system_status():
             "dimension": settings.EMBEDDING_DIMENSION,
             "preload": settings.PRELOAD_EMBEDDING_MODEL,
             "include_embedding_in_response": settings.INCLUDE_EMBEDDING_IN_RESPONSE,
+        },
+        "reranker": {
+            "enabled": settings.ENABLE_RERANKER,
+            "model": settings.RERANKER_MODEL,
+            "device": settings.RERANKER_DEVICE,
+            "preload": settings.PRELOAD_RERANKER_MODEL,
+            "candidate_pool_size": settings.RERANKER_CANDIDATE_POOL_SIZE,
         },
         "limits": {
             "allowed_extensions": sorted(settings.ALLOWED_EXTENSIONS),
@@ -823,6 +878,7 @@ async def rag_search(
     jd_text: str = Form(""),
     jd_file: Optional[UploadFile] = File(None),
     top_k: int = Form(10),
+    filter_mode: str = Form("strict"),
 ):
     """End-to-end retrieval pipeline: job context -> query rewrite -> hard filter -> vector retrieval."""
     if top_k <= 0:
@@ -830,6 +886,10 @@ async def rag_search(
             status_code=HTTP_400_BAD_REQUEST,
             detail="top_k must be a positive integer",
         )
+    try:
+        filter_mode = _normalize_filter_mode(filter_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     jd_file_content: Optional[bytes] = None
     if jd_file is not None:
@@ -845,12 +905,40 @@ async def rag_search(
         if not search_query_embedding:
             raise DatabaseError("search_query_embedding is empty")
 
-        filtered_resume_ids = query_resume_ids_by_hard_filters(query.hard_filters)
+        applied_hard_filters = _apply_filter_mode(query.hard_filters, filter_mode)
+        filtered_resume_ids = query_resume_ids_by_hard_filters(applied_hard_filters)
+        retrieval_pool_size = _retrieval_pool_size(top_k)
         vector_results = query_similar_resumes(
             resume_ids=filtered_resume_ids,
             search_query_embedding=search_query_embedding,
-            top_k=top_k,
+            top_k=retrieval_pool_size,
         )
+        vector_pool_resume_ids = [item.resume_id for item in vector_results]
+        reranked_results = vector_results
+        if settings.ENABLE_RERANKER and vector_results:
+            rerank_resumes_payload = get_resumes_by_ids(vector_pool_resume_ids)
+            reranked_payload = rerank_resumes(
+                search_query=query.search_query,
+                resumes=rerank_resumes_payload,
+                top_k=top_k,
+            )
+            reranker_scores_by_id = {
+                item["resume_id"]: item.get("reranker_score")
+                for item in reranked_payload
+            }
+            vector_by_id = {item.resume_id: item for item in vector_results}
+            reranked_results = []
+            for item in reranked_payload:
+                vector_item = vector_by_id.get(item["resume_id"])
+                if vector_item is None:
+                    continue
+                reranked_results.append(
+                    vector_item.model_copy(
+                        update={"reranker_score": reranker_scores_by_id.get(item["resume_id"])}
+                    )
+                )
+        else:
+            reranked_results = vector_results[:top_k]
     except JDSourceConflict as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except JobContextEmpty as exc:
@@ -858,16 +946,22 @@ async def rag_search(
     except Exception as exc:
         _raise_http_exception(exc)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "hard_filters": query.hard_filters.model_dump(),
+        "applied_hard_filters": applied_hard_filters.model_dump(),
+        "filter_mode": filter_mode,
         "search_query": query.search_query,
         "search_query_embedding": search_query_embedding,
         "filtered_resume_ids": filtered_resume_ids,
+        "retrieval_pool_size": retrieval_pool_size,
+        "reranker_enabled": settings.ENABLE_RERANKER,
+        "reranker_model": settings.RERANKER_MODEL if settings.ENABLE_RERANKER else None,
+        "vector_candidate_pool_ids": vector_pool_resume_ids,
         "top_k": top_k,
-        "top_k_resume_ids": [item.resume_id for item in vector_results],
-        "count": len(vector_results),
+        "top_k_resume_ids": [item.resume_id for item in reranked_results],
+        "count": len(reranked_results),
         "query_usage": query_usage,
-    })
+    }))
 
 
 @router.post("/api/scoring-schema")
@@ -942,7 +1036,9 @@ async def score_resumes(
                 resume=resume,
                 feedback_influence_mode=feedback_influence_mode,
             )
-            results.append(score.model_dump())
+            result = score.model_dump()
+            result["candidate_name"] = resume.get("candidate_name") or ""
+            results.append(result)
             scoring_usage.append({
                 "resume_id": resume["resume_id"],
                 "usage": usage,
@@ -1041,6 +1137,7 @@ async def scoring_search(
     jd_text: str = Form(""),
     jd_file: Optional[UploadFile] = File(None),
     initial_top_k: int = Form(10),
+    filter_mode: str = Form("strict"),
     feedback_examples_per_label: int = Form(2),
     feedback_influence_mode: str = Form("on"),
 ):
@@ -1055,6 +1152,10 @@ async def scoring_search(
             status_code=HTTP_400_BAD_REQUEST,
             detail="feedback_examples_per_label must be >= 0",
         )
+    try:
+        filter_mode = _normalize_filter_mode(filter_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     try:
         feedback_influence_mode = normalize_feedback_influence_mode(feedback_influence_mode)
     except ValueError as exc:
@@ -1074,17 +1175,35 @@ async def scoring_search(
         if not search_query_embedding:
             raise DatabaseError("search_query_embedding is empty")
 
-        filtered_resume_ids = query_resume_ids_by_hard_filters(query.hard_filters)
+        applied_hard_filters = _apply_filter_mode(query.hard_filters, filter_mode)
+        filtered_resume_ids = query_resume_ids_by_hard_filters(applied_hard_filters)
+        retrieval_pool_size = _retrieval_pool_size(initial_top_k)
         retrieval_results = query_similar_resumes(
             resume_ids=filtered_resume_ids,
             search_query_embedding=search_query_embedding,
-            top_k=initial_top_k,
+            top_k=retrieval_pool_size,
         )
-        retrieved_resume_ids = [item.resume_id for item in retrieval_results]
+        vector_candidate_pool_ids = [item.resume_id for item in retrieval_results]
         retrieval_by_id = {
             item.resume_id: item.model_dump()
             for item in retrieval_results
         }
+        retrieved_resume_ids = vector_candidate_pool_ids
+        if settings.ENABLE_RERANKER and retrieval_results:
+            rerank_resumes_payload = get_resumes_by_ids(vector_candidate_pool_ids)
+            reranked_payload = rerank_resumes(
+                search_query=query.search_query,
+                resumes=rerank_resumes_payload,
+                top_k=initial_top_k,
+            )
+            retrieved_resume_ids = [item["resume_id"] for item in reranked_payload]
+            reranker_scores_by_id = {
+                item["resume_id"]: item.get("reranker_score")
+                for item in reranked_payload
+            }
+            for resume_id, score in reranker_scores_by_id.items():
+                if resume_id in retrieval_by_id:
+                    retrieval_by_id[resume_id]["reranker_score"] = score
 
         schema = find_best_scoring_schema(search_query_embedding)
         feedback_examples = get_feedback_examples(
@@ -1104,6 +1223,7 @@ async def scoring_search(
                 feedback_influence_mode=feedback_influence_mode,
             )
             result = score.model_dump()
+            result["candidate_name"] = resume.get("candidate_name") or ""
             result["retrieval"] = retrieval_by_id.get(resume["resume_id"], {})
             scored_results.append(result)
             scoring_usage.append({
@@ -1119,12 +1239,18 @@ async def scoring_search(
     except Exception as exc:
         _raise_http_exception(exc)
 
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "hard_filters": query.hard_filters.model_dump(),
+        "applied_hard_filters": applied_hard_filters.model_dump(),
+        "filter_mode": filter_mode,
         "search_query": query.search_query,
         "search_query_embedding": search_query_embedding,
         "filtered_resume_ids": filtered_resume_ids,
         "initial_top_k": initial_top_k,
+        "retrieval_pool_size": retrieval_pool_size,
+        "reranker_enabled": settings.ENABLE_RERANKER,
+        "reranker_model": settings.RERANKER_MODEL if settings.ENABLE_RERANKER else None,
+        "vector_candidate_pool_ids": vector_candidate_pool_ids,
         "retrieved_resume_ids": retrieved_resume_ids,
         "schema": schema,
         "feedback_examples_used": feedback_examples,
@@ -1136,4 +1262,4 @@ async def scoring_search(
         "results": scored_results,
         "query_usage": query_usage,
         "scoring_usage": scoring_usage,
-    })
+    }))

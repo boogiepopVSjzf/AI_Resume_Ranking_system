@@ -4,7 +4,7 @@ from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
 
-ProviderName = Literal["gemini", "openai", "ollama"]
+ProviderName = Literal["anthropic", "dashscope", "gemini", "openai", "ollama"]
 
 
 class LLMGenerateRequest(BaseModel):

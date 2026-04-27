@@ -767,7 +767,7 @@ def get_resumes_by_ids(resume_ids: list[str]) -> list[dict[str, Any]]:
         return []
 
     query = """
-        select resume_id, metadata, semantic_text, raw_json
+        select resume_id, name, metadata, semantic_text, raw_json
         from resumes
         where resume_id = any(%(resume_ids)s::text[])
         order by array_position(%(resume_ids)s::text[], resume_id)
@@ -782,9 +782,10 @@ def get_resumes_by_ids(resume_ids: list[str]) -> list[dict[str, Any]]:
             return [
                 {
                     "resume_id": row[0],
-                    "metadata": row[1] if isinstance(row[1], dict) else {},
-                    "semantic_text": row[2] or "",
-                    "raw_json": row[3] if isinstance(row[3], dict) else {},
+                    "candidate_name": (row[1] or "").strip(),
+                    "metadata": row[2] if isinstance(row[2], dict) else {},
+                    "semantic_text": row[3] or "",
+                    "raw_json": row[4] if isinstance(row[4], dict) else {},
                 }
                 for row in rows
             ]

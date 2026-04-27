@@ -148,6 +148,25 @@ export function SystemSettingsPage() {
             </article>
 
             <article className="settings-card">
+              <p className="eyebrow">Reranker</p>
+              <h3>Precision ranking</h3>
+              <BoolLine label="Enabled" value={status.reranker.enabled} />
+              <div className="settings-line">
+                <span>Model</span>
+                <strong>{status.reranker.model}</strong>
+              </div>
+              <div className="settings-line">
+                <span>Device</span>
+                <strong>{status.reranker.device}</strong>
+              </div>
+              <div className="settings-line">
+                <span>Candidate pool</span>
+                <strong>{status.reranker.candidate_pool_size}</strong>
+              </div>
+              <BoolLine label="Preload" value={status.reranker.preload} />
+            </article>
+
+            <article className="settings-card">
               <p className="eyebrow">Upload Limits</p>
               <h3>Resume intake</h3>
               <div className="settings-line">

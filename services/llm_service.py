@@ -9,7 +9,7 @@ from config import settings
 from utils.errors import LLMError
 
 
-SUPPORTED_PROVIDERS = {"dashscope", "gemini", "openai", "ollama"}
+SUPPORTED_PROVIDERS = {"anthropic", "dashscope", "gemini", "openai", "ollama"}
 
 # This is a workaround for ancient MacOS LibreSSL versions that cause SSLEOFError.
 # It forces requests to use a more robust set of ciphers.
@@ -64,6 +64,8 @@ def _resolve_model(provider: str, model: Optional[str]) -> str:
         return settings.GEMINI_MODEL
     if provider == "openai":
         return settings.OPENAI_MODEL
+    if provider == "anthropic":
+        return settings.ANTHROPIC_MODEL
     if provider == "ollama":
         return settings.OLLAMA_MODEL
 
@@ -153,6 +155,57 @@ def _call_openai(prompt: str, model: str) -> tuple[str, dict]:
         return content, usage
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError(f"Unexpected OpenAI response structure: {exc}") from exc
+
+
+def _call_anthropic(prompt: str, model: str) -> tuple[str, dict]:
+    if not settings.ANTHROPIC_API_KEY:
+        raise LLMError("Missing ANTHROPIC_API_KEY")
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": settings.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+    }
+
+    payload = {
+        "model": model,
+        "max_tokens": 2048,
+        "temperature": settings.LLM_TEMPERATURE,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+    }
+
+    try:
+        session = _build_https_session()
+        response = session.post(
+            settings.ANTHROPIC_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"Anthropic request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        raise LLMError(f"Anthropic API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+
+    try:
+        content_blocks = data["content"]
+        text_chunks = [
+            block["text"]
+            for block in content_blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        content = "\n".join(chunk for chunk in text_chunks if chunk)
+        usage = data.get("usage", {})
+        if not content:
+            raise KeyError("No text blocks in Anthropic response")
+        return content, usage
+    except (KeyError, TypeError) as exc:
+        raise LLMError(f"Unexpected Anthropic response structure: {exc}") from exc
 
 #调用 Ollama 模型
 def _call_ollama(prompt: str, model: str) -> tuple[str, dict]:
@@ -245,6 +298,8 @@ def call_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] =
         return _call_gemini(prompt, resolved_model)
     if resolved_provider == "openai":
         return _call_openai(prompt, resolved_model)
+    if resolved_provider == "anthropic":
+        return _call_anthropic(prompt, resolved_model)
     if resolved_provider == "ollama":
         return _call_ollama(prompt, resolved_model)
 

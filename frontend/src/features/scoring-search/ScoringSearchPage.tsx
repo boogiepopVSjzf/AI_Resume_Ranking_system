@@ -1,6 +1,7 @@
 import { ChangeEvent, useMemo, useState } from "react";
 import { runScoringSearch, submitScoringFeedback } from "./scoringSearchApi";
 import type {
+  FilterMode,
   FeedbackInfluenceMode,
   FeedbackLabel,
   ScoringResult,
@@ -8,6 +9,11 @@ import type {
 } from "./scoringSearchTypes";
 
 const FEEDBACK_LABELS: FeedbackLabel[] = ["excellent", "good", "qualified", "bad", "n/a"];
+const FILTER_MODE_OPTIONS: Array<{ value: FilterMode; label: string }> = [
+  { value: "strict", label: "Strict" },
+  { value: "balanced", label: "Balanced" },
+  { value: "semantic_only", label: "Semantic only" },
+];
 
 function formatPercent(value?: number) {
   if (typeof value !== "number") return "n/a";
@@ -31,6 +37,11 @@ function ruleTitle(ruleKey: string) {
   return ruleKey.replace(/^rules/i, "Rule ");
 }
 
+function displayCandidateName(scoreResult: ScoringResult) {
+  const name = scoreResult.candidate_name?.trim();
+  return name && name.length > 0 ? name : scoreResult.resume_id;
+}
+
 function isPdf(file: File) {
   return file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
 }
@@ -39,6 +50,7 @@ export function ScoringSearchPage() {
   const [jdFile, setJdFile] = useState<File | null>(null);
   const [hrNote, setHrNote] = useState("");
   const [initialTopK, setInitialTopK] = useState("5");
+  const [filterMode, setFilterMode] = useState<FilterMode>("strict");
   const [feedbackExamplesPerLabel, setFeedbackExamplesPerLabel] = useState("2");
   const [feedbackInfluenceMode, setFeedbackInfluenceMode] =
     useState<FeedbackInfluenceMode>("on");
@@ -94,6 +106,7 @@ export function ScoringSearchPage() {
         jdFile,
         hrNote,
         initialTopK: Number(initialTopK),
+        filterMode,
         feedbackExamplesPerLabel: Number(feedbackExamplesPerLabel),
         feedbackInfluenceMode,
       });
@@ -175,13 +188,26 @@ export function ScoringSearchPage() {
 
           <div className="compact-fields">
             <label className="inline-control">
-              <span>Initial top K</span>
+              <span>Final top K</span>
               <input
                 className="text-input"
                 value={initialTopK}
                 onChange={(event) => setInitialTopK(event.target.value)}
                 inputMode="numeric"
               />
+            </label>
+            <label className="inline-control">
+              <span>Screening mode</span>
+              <select
+                value={filterMode}
+                onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+              >
+                {FILTER_MODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="inline-control">
               <span>Examples per label</span>
@@ -243,7 +269,12 @@ export function ScoringSearchPage() {
               <span>Matched schema</span>
               <strong>{result.schema.schema_name}</strong>
               <small>
-                {result.feedback_examples_count} examples · {result.feedback_influence_mode}
+                {FILTER_MODE_OPTIONS.find((option) => option.value === result.filter_mode)?.label ??
+                  result.filter_mode}
+                {" · "}
+                {result.feedback_examples_count} examples
+                {" · "}
+                {result.feedback_influence_mode}
               </small>
             </div>
           )}
@@ -279,8 +310,8 @@ export function ScoringSearchPage() {
                 <div className="candidate-body">
                   <div className="candidate-header">
                     <div>
-                      <p className="eyebrow">Resume ID</p>
-                      <h3>{scoreResult.resume_id}</h3>
+                      <p className="eyebrow">Candidate</p>
+                      <h3>{displayCandidateName(scoreResult)}</h3>
                     </div>
                     <div className="similarity-pill">
                       Similarity {formatPercent(scoreResult.retrieval?.similarity_score)}
