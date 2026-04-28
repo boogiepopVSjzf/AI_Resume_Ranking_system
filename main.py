@@ -17,6 +17,7 @@ logger = get_logger("main")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://3.86.70.7:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ],
