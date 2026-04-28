@@ -50,7 +50,7 @@ export function ScoringSearchPage() {
   const [jdFile, setJdFile] = useState<File | null>(null);
   const [hrNote, setHrNote] = useState("");
   const [initialTopK, setInitialTopK] = useState("5");
-  const [filterMode, setFilterMode] = useState<FilterMode>("strict");
+  const [filterMode, setFilterMode] = useState<FilterMode>("balanced");
   const [feedbackExamplesPerLabel, setFeedbackExamplesPerLabel] = useState("2");
   const [feedbackInfluenceMode, setFeedbackInfluenceMode] =
     useState<FeedbackInfluenceMode>("on");

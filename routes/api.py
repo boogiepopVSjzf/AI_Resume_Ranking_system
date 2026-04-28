@@ -23,8 +23,11 @@ from services.job_context_service import (
     build_job_context,
     resolve_jd_body,
 )
-from services.job_query_rewrite_service import rewrite_merged_context
-from services.job_query_rewrite_service import embed_search_query
+from services.job_query_rewrite_service import (
+    embed_search_query,
+    filter_mode_to_prompt_variant,
+    rewrite_merged_context,
+)
 from services.resume_storage_bundle import build_resume_storage_bundle
 from services.scoring_schema_service import build_scoring_schema_payload, parse_rules_text
 from services.scoring_service import (
@@ -86,24 +89,24 @@ _SCHEMA_CACHE: OrderedDict[str, dict] = OrderedDict()
 
 
 def _normalize_filter_mode(raw_mode: str) -> str:
-    mode = (raw_mode or "strict").strip().lower()
+    mode = (raw_mode or "balanced").strip().lower()
     if mode not in {"strict", "balanced", "semantic_only"}:
         raise ValueError("filter_mode must be one of: strict, balanced, semantic_only")
     return mode
 
 
 def _apply_filter_mode(hard_filters: HardFilters, filter_mode: str) -> HardFilters:
+    """Decide which hard filters reach Postgres.
+
+    Strictness is controlled at the prompt level: "strict" uses the permissive
+    rewrite prompt while "balanced" uses the conservative one (see
+    services/job_query_rewrite_service.py). Here we only need to disable hard
+    filtering entirely when the caller explicitly opts into "semantic_only".
+    """
     mode = _normalize_filter_mode(filter_mode)
-    if mode == "strict":
-        return hard_filters.model_copy(deep=True)
-    if mode == "balanced":
-        return HardFilters(
-            min_yoe=hard_filters.min_yoe,
-            required_skills=[],
-            education_level=hard_filters.education_level,
-            major=None,
-        )
-    return HardFilters()
+    if mode == "semantic_only":
+        return HardFilters()
+    return hard_filters.model_copy(deep=True)
 
 
 def _json_safe(value):
@@ -215,12 +218,13 @@ def _resolved_model_for_cache(provider: str, model: Optional[str]) -> str:
     return fallback_model
 
 
-def _query_rewrite_cache_key(merged_context: str) -> str:
+def _query_rewrite_cache_key(merged_context: str, filter_mode: str) -> str:
     provider = settings.PARSE_QUERY_LLM_PROVIDER
     payload = {
         "merged_context": _normalize_cache_context(merged_context),
         "provider": provider,
         "model": _parse_query_model_for_cache(provider, settings.PARSE_QUERY_LLM_MODEL),
+        "prompt_variant": filter_mode_to_prompt_variant(filter_mode),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -230,12 +234,21 @@ def _stable_json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _rewrite_merged_context_cached(merged_context: str) -> tuple[StandardizedJobQuery, dict]:
-    """Reuse deterministic query-rewrite output for identical JD/HR inputs."""
-    if not settings.QUERY_REWRITE_CACHE_ENABLED:
-        return rewrite_merged_context(merged_context)
+def _rewrite_merged_context_cached(
+    merged_context: str,
+    filter_mode: str = "balanced",
+) -> tuple[StandardizedJobQuery, dict]:
+    """Reuse deterministic query-rewrite output for identical JD/HR inputs.
 
-    cache_key = _query_rewrite_cache_key(merged_context)
+    The cache key incorporates the prompt variant chosen by ``filter_mode``,
+    so "strict" and "balanced" do not share entries while "balanced" and
+    "semantic_only" do (they use the same conservative prompt).
+    """
+    mode = _normalize_filter_mode(filter_mode)
+    if not settings.QUERY_REWRITE_CACHE_ENABLED:
+        return rewrite_merged_context(merged_context, filter_mode=mode)
+
+    cache_key = _query_rewrite_cache_key(merged_context, mode)
     cached = _QUERY_REWRITE_CACHE.get(cache_key)
     if cached is not None:
         _QUERY_REWRITE_CACHE.move_to_end(cache_key)
@@ -243,7 +256,7 @@ def _rewrite_merged_context_cached(merged_context: str) -> tuple[StandardizedJob
         usage.update({"cached": True, "cache_key": cache_key})
         return StandardizedJobQuery.model_validate(cached["query"]), usage
 
-    query, usage = rewrite_merged_context(merged_context)
+    query, usage = rewrite_merged_context(merged_context, filter_mode=mode)
     _QUERY_REWRITE_CACHE[cache_key] = {
         "query": query.model_dump(),
         "usage": dict(usage or {}),
@@ -799,7 +812,9 @@ async def submit_job_context(
 
     if rewrite:
         try:
-            query, rewrite_usage = _rewrite_merged_context_cached(result["merged_context"])
+            query, rewrite_usage = _rewrite_merged_context_cached(
+                result["merged_context"], "balanced"
+            )
             result["standardized_query"] = query.model_dump()
             result["search_query_embedding"] = embed_search_query(query)
             result["query_rewrite_usage"] = rewrite_usage
@@ -811,7 +826,12 @@ async def submit_job_context(
 
 @router.post("/api/query-rewrite")
 async def query_rewrite(payload: dict):
-    """Rewrite merged_context into hard_filters + search_query via LLM."""
+    """Rewrite merged_context into hard_filters + search_query via LLM.
+
+    The optional ``filter_mode`` field selects which rewrite prompt is used:
+    "strict" (permissive) or "balanced"/"semantic_only" (conservative). Defaults
+    to "balanced".
+    """
     merged_context = payload.get("merged_context")
     if not isinstance(merged_context, str) or not merged_context.strip():
         raise HTTPException(
@@ -820,7 +840,12 @@ async def query_rewrite(payload: dict):
         )
 
     try:
-        query, usage = _rewrite_merged_context_cached(merged_context)
+        filter_mode = _normalize_filter_mode(payload.get("filter_mode") or "balanced")
+    except ValueError as exc:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    try:
+        query, usage = _rewrite_merged_context_cached(merged_context, filter_mode)
     except ValueError as exc:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
@@ -878,7 +903,7 @@ async def rag_search(
     jd_text: str = Form(""),
     jd_file: Optional[UploadFile] = File(None),
     top_k: int = Form(10),
-    filter_mode: str = Form("strict"),
+    filter_mode: str = Form("balanced"),
 ):
     """End-to-end retrieval pipeline: job context -> query rewrite -> hard filter -> vector retrieval."""
     if top_k <= 0:
@@ -900,7 +925,9 @@ async def rag_search(
     try:
         jd_body = resolve_jd_body(jd_text, jd_file_content)
         context_result = build_job_context(hr_note, jd_body)
-        query, query_usage = _rewrite_merged_context_cached(context_result["merged_context"])
+        query, query_usage = _rewrite_merged_context_cached(
+            context_result["merged_context"], filter_mode
+        )
         search_query_embedding = embed_search_query(query)
         if not search_query_embedding:
             raise DatabaseError("search_query_embedding is empty")
@@ -1010,7 +1037,9 @@ async def score_resumes(
 
         jd_body = resolve_jd_body("", jd_file_content)
         context_result = build_job_context(hr_note, jd_body)
-        query, query_usage = _rewrite_merged_context_cached(context_result["merged_context"])
+        query, query_usage = _rewrite_merged_context_cached(
+            context_result["merged_context"], "balanced"
+        )
         search_query_embedding = embed_search_query(query)
         if not search_query_embedding:
             raise DatabaseError("search_query_embedding is empty")
@@ -1137,7 +1166,7 @@ async def scoring_search(
     jd_text: str = Form(""),
     jd_file: Optional[UploadFile] = File(None),
     initial_top_k: int = Form(10),
-    filter_mode: str = Form("strict"),
+    filter_mode: str = Form("balanced"),
     feedback_examples_per_label: int = Form(2),
     feedback_influence_mode: str = Form("on"),
 ):
@@ -1170,7 +1199,9 @@ async def scoring_search(
     try:
         jd_body = resolve_jd_body(jd_text, jd_file_content)
         context_result = build_job_context(hr_note, jd_body)
-        query, query_usage = _rewrite_merged_context_cached(context_result["merged_context"])
+        query, query_usage = _rewrite_merged_context_cached(
+            context_result["merged_context"], filter_mode
+        )
         search_query_embedding = embed_search_query(query)
         if not search_query_embedding:
             raise DatabaseError("search_query_embedding is empty")
