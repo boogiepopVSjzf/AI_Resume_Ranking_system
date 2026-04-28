@@ -5,9 +5,13 @@ import type { RuleDraft, ScoringSchemaResponse } from "./schemaStudioTypes";
 const WEIGHT_TOTAL_TARGET = 100;
 const WEIGHT_TOTAL_TOLERANCE = 0.01;
 
+function makeId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function newRule(index: number): RuleDraft {
   return {
-    id: crypto.randomUUID(),
+    id: makeId(),
     text: "",
     weight: index === 0 ? "25" : "",
   };
@@ -30,12 +34,12 @@ export function SchemaStudioPage() {
   const [schemaName, setSchemaName] = useState("Data Science Level 1");
   const [rules, setRules] = useState<RuleDraft[]>([
     {
-      id: crypto.randomUUID(),
+      id: makeId(),
       text: "Evaluate SQL querying ability, including joins, aggregations, window functions, and data validation for analytical tasks.",
       weight: "25",
     },
     {
-      id: crypto.randomUUID(),
+      id: makeId(),
       text: "Evaluate Python data science execution, including data cleaning, exploratory analysis, visualization, and reproducible workflows.",
       weight: "25",
     },
