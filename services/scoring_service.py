@@ -50,7 +50,6 @@ class RuleScore(BaseModel):
 
 
 class FeedbackUsageSummary(BaseModel):
-    mode: str = "on"
     used_feedback_ids: list[str] = Field(default_factory=list)
     ignored_feedback_ids: list[str] = Field(default_factory=list)
     overall_influence: str = ""
@@ -154,78 +153,177 @@ def _summarize_scoring_result(scoring_result: dict[str, Any] | None) -> dict[str
     }
 
 
+def _resume_input_from_bundle(
+    bundle: dict[str, Any] | None,
+    *,
+    fallback_resume_id: str,
+) -> dict[str, Any]:
+    """Same shape as ``target_resume`` in the scoring prompt (for few-shot parity).
+
+    Includes ``resume_id``, ``metadata``, and ``semantic_text`` — the compact
+    representation used for LLM scoring. ``raw_json`` is intentionally omitted
+    to keep prompts short.
+    """
+    if not bundle:
+        return {
+            "resume_id": fallback_resume_id,
+            "metadata": {},
+            "semantic_text": "",
+        }
+    rid = str(bundle.get("resume_id") or fallback_resume_id).strip() or fallback_resume_id
+    meta = bundle.get("metadata")
+    return {
+        "resume_id": rid,
+        "metadata": meta if isinstance(meta, dict) else {},
+        "semantic_text": str(bundle.get("semantic_text") or "").strip(),
+    }
+
+
 def build_feedback_calibration_data(
     feedback_examples: list[dict[str, Any]],
+    *,
+    target_resume_id: str | None = None,
+    resume_evidence_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Convert raw saved feedback rows into structured calibration data for prompting."""
-    calibration_data: dict[str, Any] = {
-        "label_meanings": FEEDBACK_LABEL_MEANINGS,
-        "positive_examples": [],
-        "negative_examples": [],
-        "neutral_unrated_examples": [],
-    }
+    """Build a single few-shot list for the scoring LLM.
+
+    Each element pairs (1) ``resume`` — same JSON shape as ``target_resume`` in
+    the scoring prompt, when ``resume_evidence_by_id`` supplies DB rows — with
+    (2) ``human_judgment`` — the saved feedback metadata for that example.
+
+    When ``target_resume_id`` is set, ``human_judgment.same_resume_as_target``
+    marks rows for the resume currently being scored.
+    """
+    few_shot_examples: list[dict[str, Any]] = []
+    evidence = resume_evidence_by_id or {}
 
     for example in feedback_examples:
         if not isinstance(example, dict):
             continue
 
         label = str(example.get("label", "")).strip().lower()
-        structured_example = {
-            "feedback_id": example.get("feedback_id"),
-            "resume_id": example.get("resume_id"),
-            "human_label": label,
-            "label_meaning": FEEDBACK_LABEL_MEANINGS.get(label, ""),
-            "human_feedback": example.get("feedback_text") or "",
-            "prior_model_score": example.get("score"),
-            "prior_scoring_result_summary": _summarize_scoring_result(example.get("scoring_result")),
-            "created_at": example.get("created_at"),
-        }
+        rid = str(example.get("resume_id") or "").strip()
+        same_resume = bool(
+            target_resume_id
+            and rid == str(target_resume_id).strip()
+        )
+        bundle = evidence.get(rid) if rid else None
+        few_shot_examples.append({
+            "resume": _resume_input_from_bundle(bundle, fallback_resume_id=rid),
+            "human_judgment": {
+                "feedback_id": example.get("feedback_id"),
+                "same_resume_as_target": same_resume,
+                "human_label": label,
+                "label_meaning": FEEDBACK_LABEL_MEANINGS.get(label, ""),
+                "human_feedback": example.get("feedback_text") or "",
+                "prior_model_score": example.get("score"),
+                "prior_scoring_result_summary": _summarize_scoring_result(example.get("scoring_result")),
+                "created_at": example.get("created_at"),
+            },
+        })
 
-        if label in {"excellent", "good", "qualified"}:
-            calibration_data["positive_examples"].append(structured_example)
-        elif label == "bad":
-            calibration_data["negative_examples"].append(structured_example)
-        elif label == "n/a":
-            calibration_data["neutral_unrated_examples"].append(structured_example)
+    same_resume_rows = [
+        row for row in few_shot_examples
+        if (row.get("human_judgment") or {}).get("same_resume_as_target")
+    ]
+    other_rows = [
+        row for row in few_shot_examples
+        if not (row.get("human_judgment") or {}).get("same_resume_as_target")
+    ]
+    ts_key = lambda row: str((row.get("human_judgment") or {}).get("created_at") or "")
+    same_resume_rows.sort(key=ts_key, reverse=True)
+    other_rows.sort(key=ts_key, reverse=True)
+    ordered = same_resume_rows + other_rows
 
-    return calibration_data
+    return {
+        "label_meanings": FEEDBACK_LABEL_MEANINGS,
+        "few_shot_examples": ordered,
+    }
 
 
 def _has_usable_feedback_calibration(feedback_calibration_data: dict[str, Any]) -> bool:
-    return bool(
-        feedback_calibration_data.get("positive_examples")
-        or feedback_calibration_data.get("negative_examples")
-    )
+    for row in feedback_calibration_data.get("few_shot_examples") or []:
+        hj = row.get("human_judgment") or {}
+        label = str(hj.get("human_label", "")).strip().lower()
+        if label in {"excellent", "good", "qualified", "bad"}:
+            return True
+    return False
+
+
+def _same_resume_human_tier_instructions(feedback_calibration_data: dict[str, Any]) -> str:
+    """When this resume has a saved human tier, require weighted total to align with it.
+
+    ``few_shot_examples`` is ordered with same-resume rows first (newest first).
+    """
+    label: str | None = None
+    for row in feedback_calibration_data.get("few_shot_examples") or []:
+        hj = row.get("human_judgment") or {}
+        if not hj.get("same_resume_as_target"):
+            continue
+        raw = str(hj.get("human_label", "")).strip().lower()
+        if raw in {"excellent", "good", "qualified", "bad"}:
+            label = raw
+            break
+    if not label:
+        return ""
+
+    bands = {
+        "excellent": "7.5–10.0",
+        "good": "6.0–8.5",
+        "qualified": "4.0–6.5",
+        "bad": "0.0–4.5",
+    }
+    band = bands[label]
+    return f"""
+**Human tier alignment (this resume only):** At least one few-shot row has
+`human_judgment.same_resume_as_target: true` with `human_label` = `{label}`.
+That is a **binding hiring prior** for the same candidate you are scoring now.
+
+Set per-rule scores so that, once each rule score is multiplied by its schema
+weight and summed (the same weighted total the backend will compute), the
+**implied weighted total** falls **approximately in {band}** on the 0–10 scale.
+
+You may only land **outside** that band if concrete resume evidence under
+**specific rules** makes the tier indefensible — then lower or raise the
+affected rules, cite those rules in `reason` / `feedback_influence`, and explain
+the conflict clearly in `explanation`. Do **not** reproduce an old automated
+total that plainly conflicts with `{label}` without such rule-level
+justification.
+""".strip()
 
 
 def _feedback_mode_instructions(mode: str) -> str:
     if mode == "off":
-        return """
-Feedback influence mode: off.
-Ignore feedback calibration data completely. Score only according to the scoring schema.
-Return feedback_used=false for every rule and an empty feedback_usage_summary.
-""".strip()
+        return ""
     return """
-Feedback influence mode: on.
-You must inspect and use all usable feedback calibration examples as human preference calibration.
-The scoring schema remains the source of truth and has higher priority than feedback examples.
-Feedback examples help you understand how human reviewers interpret the schema in practice.
-Use feedback only to calibrate strictness, expectations, and what strong, borderline, or weak evidence looks like.
-Do not copy scores or labels from examples. Do not treat feedback examples as score templates.
-Do not override the schema rules simply because a feedback example looks superficially similar.
-Compare the target resume against feedback examples before finalizing each rule score.
-Use feedback when examples show similar strengths, weaknesses, missing evidence, or borderline evidence under the same schema.
-If a relevant human label conflicts with a prior model score in a saved example, trust the human label more than the prior model score.
-Interpret the labels this way:
-- excellent: a clearly strong match that should rank near the top
-- good: a solid match with limited but noticeable gaps
-- qualified: acceptable and can move forward, but only meets the bar with meaningful weaknesses
-- bad: a weak match that should rank low
-- n/a: not a scoring judgment and must not influence the score
-Ignore n/a examples as scoring signals because they are audit-only.
-For each rule, state whether feedback changed the score, confirmed the score, or was irrelevant.
-The feedback_usage_summary must name used_feedback_ids, ignored_feedback_ids, and the overall influence.
-If no usable feedback calibration examples are detected, set feedback_used=false for every rule and explain that no feedback was detected.
+The calibration JSON contains `few_shot_examples`. Each item has:
+- `resume` — same keys as `Scoring input.target_resume` (`resume_id`, `metadata`, `semantic_text`).
+- `human_judgment` — label, free-text note, prior model score snapshot, etc.
+
+Use few-shots where `same_resume_as_target` is false as **rule-calibration**
+guidance only — do not copy those rows' human labels or implied totals onto this
+candidate. When a **Human tier alignment** block appears below for this resume,
+it overrides generic "do not copy label" guidance for **overall score level**.
+
+Rules:
+- The scoring schema and the target resume evidence remain the source of truth.
+- Read each few-shot's `resume` plus `human_judgment` to calibrate how strict or
+  lenient each rule should be when evidence is strong, borderline, or weak.
+- Rows with `human_judgment.same_resume_as_target: true` identify **this same
+  resume**; when the **Human tier alignment** block is present, follow it for
+  weighted-total expectations; otherwise they are the strongest qualitative prior.
+- Rows with `human_judgment.human_label` of `n/a` are audit-only: never use them
+  as a scoring signal.
+- Do not mimic another row's label just because of surface similarity.
+- If a few-shot row changes your strictness on a rule, set `feedback_used=true`
+  for that rule and cite `human_judgment.feedback_id` in `feedback_influence`.
+
+`feedback_usage_summary`: list which `feedback_id`s materially informed any rule
+in `used_feedback_ids`; put unused ids (including `n/a` rows) in
+`ignored_feedback_ids`; one-sentence `overall_influence`.
+
+If `few_shot_examples` is empty or every row is `n/a`, set every rule
+`feedback_used=false` and note that no usable few-shots were present.
 """.strip()
 
 
@@ -235,10 +333,15 @@ def build_resume_scoring_prompt(
     feedback_examples: list[dict[str, Any]],
     resume: dict[str, Any],
     feedback_influence_mode: str = "on",
+    resume_evidence_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Build the strict JSON scoring prompt for one resume."""
     feedback_influence_mode = normalize_feedback_influence_mode(feedback_influence_mode)
-    feedback_calibration_data = build_feedback_calibration_data(feedback_examples)
+    feedback_calibration_data = build_feedback_calibration_data(
+        feedback_examples,
+        target_resume_id=resume.get("resume_id"),
+        resume_evidence_by_id=resume_evidence_by_id,
+    )
     has_usable_feedback = _has_usable_feedback_calibration(feedback_calibration_data)
     examples_text = (
         json.dumps(feedback_calibration_data, ensure_ascii=False, indent=2)
@@ -263,6 +366,7 @@ def build_resume_scoring_prompt(
         for rule_key in rules_json
     }
 
+    meta = resume.get("metadata")
     prompt_payload = {
         "scoring_schema": {
             "schema_id": schema.get("schema_id"),
@@ -272,19 +376,32 @@ def build_resume_scoring_prompt(
         },
         "target_resume": {
             "resume_id": resume.get("resume_id"),
-            "metadata": resume.get("metadata", {}),
-            "semantic_text": resume.get("semantic_text", ""),
+            "metadata": meta if isinstance(meta, dict) else {},
+            "semantic_text": str(resume.get("semantic_text") or "").strip(),
         },
     }
+
+    feedback_instructions = _feedback_mode_instructions(feedback_influence_mode)
+    tier_extra = ""
+    if feedback_instructions:
+        tier_extra = _same_resume_human_tier_instructions(feedback_calibration_data)
+    feedback_section = (
+        f"""
+Few-shot calibration guidance:
+{feedback_instructions}
+{tier_extra}
+
+Few-shot calibration data:
+{examples_text}
+"""
+        if feedback_instructions
+        else ""
+    )
 
     return f"""
 You are a strict resume scoring assistant.
 
 Score the target resume using only the provided scoring schema. The scoring schema rules are the source of truth.
-The final score must reflect the rules, not superficial similarity to any past example.
-
-Feedback calibration:
-{_feedback_mode_instructions(feedback_influence_mode)}
 
 Requirements:
 1. Return JSON only. Do not wrap the JSON in markdown.
@@ -297,18 +414,7 @@ Requirements:
 8. Do not invent resume facts.
 9. Do not calculate the final weighted total score. The backend will calculate it from rule weights.
 10. explanation must summarize the overall fit and explicitly reference the schema rules or criteria.
-11. Evaluate each rule independently using resume evidence first, then use feedback only to calibrate how strict or lenient the judgment should be.
-12. If a resume resembles a feedback example but does not show comparable evidence under the rules, do not copy that example's label or implied score.
-13. The five labels reflect human judgment about real hiring reactions:
-    - excellent = strongly positive, near-top candidate
-    - good = positive, strong enough to consider seriously
-    - qualified = acceptable, but not clearly strong
-    - bad = negative, not competitive for this schema
-    - n/a = not a scoring judgment
-
-Structured feedback calibration data:
-{examples_text}
-
+{feedback_section}
 Scoring input:
 {json.dumps(prompt_payload, ensure_ascii=False, indent=2)}
 
@@ -317,10 +423,9 @@ Output JSON shape:
   "resume_id": "{resume.get("resume_id", "")}",
   "rule_scores": {json.dumps(rule_score_shape, ensure_ascii=False, indent=2)},
   "feedback_usage_summary": {{
-    "mode": "{feedback_influence_mode}",
     "used_feedback_ids": [],
     "ignored_feedback_ids": [],
-    "overall_influence": "Summarize how feedback calibration affected or did not affect this score."
+    "overall_influence": "Summarize how few-shot calibration affected this score, or state none was used."
   }},
   "explanation": "Explain the score by referencing the schema rules."
 }}
@@ -333,6 +438,7 @@ def score_resume_with_schema(
     feedback_examples: list[dict[str, Any]],
     resume: dict[str, Any],
     feedback_influence_mode: str = "on",
+    resume_evidence_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[ResumeScore, dict]:
     """Score a single resume with the selected schema and optional examples."""
     feedback_influence_mode = normalize_feedback_influence_mode(feedback_influence_mode)
@@ -341,6 +447,7 @@ def score_resume_with_schema(
         feedback_examples=feedback_examples,
         resume=resume,
         feedback_influence_mode=feedback_influence_mode,
+        resume_evidence_by_id=resume_evidence_by_id,
     )
     raw_output, usage = call_llm(
         prompt,
@@ -349,29 +456,29 @@ def score_resume_with_schema(
     )
     parsed = extract_json(raw_output)
     parsed = _calculate_weighted_score(parsed=parsed, schema=schema)
-    parsed["feedback_usage_summary"] = {
-        **parsed.get("feedback_usage_summary", {}),
-        "mode": feedback_influence_mode,
-    }
     if feedback_influence_mode == "off":
         for rule_score in parsed["rule_scores"].values():
             rule_score["feedback_used"] = False
             rule_score["feedback_influence"] = ""
         parsed["feedback_usage_summary"] = {
-            "mode": "off",
             "used_feedback_ids": [],
             "ignored_feedback_ids": [],
-            "overall_influence": "Feedback influence mode was off, so no feedback calibration was used.",
+            "overall_influence": "Few-shot calibration was disabled.",
         }
-    elif not _has_usable_feedback_calibration(build_feedback_calibration_data(feedback_examples)):
+    elif not _has_usable_feedback_calibration(
+        build_feedback_calibration_data(
+            feedback_examples,
+            target_resume_id=resume.get("resume_id"),
+            resume_evidence_by_id=resume_evidence_by_id,
+        )
+    ):
         for rule_score in parsed["rule_scores"].values():
             rule_score["feedback_used"] = False
-            rule_score["feedback_influence"] = "No usable feedback calibration examples were detected."
+            rule_score["feedback_influence"] = ""
         parsed["feedback_usage_summary"] = {
-            "mode": "on",
             "used_feedback_ids": [],
             "ignored_feedback_ids": [],
-            "overall_influence": "Feedback influence mode was on, but no usable feedback calibration examples were detected.",
+            "overall_influence": "No usable few-shot examples were available.",
         }
 
     try:

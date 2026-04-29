@@ -278,6 +278,7 @@ def _scoring_cache_key(
     feedback_examples: list[dict],
     resume: dict,
     feedback_influence_mode: str,
+    resume_evidence_by_id: dict[str, dict] | None = None,
 ) -> str:
     provider = settings.SCORING_LLM_PROVIDER
     payload = {
@@ -292,6 +293,7 @@ def _scoring_cache_key(
             "rules_json": schema.get("rules_json"),
         },
         "feedback_examples": feedback_examples,
+        "feedback_resume_evidence": resume_evidence_by_id or {},
         "feedback_influence_mode": feedback_influence_mode,
         "resume": {
             "resume_id": resume.get("resume_id"),
@@ -370,6 +372,7 @@ def _score_resume_with_schema_cached(
     feedback_examples: list[dict],
     resume: dict,
     feedback_influence_mode: str = "on",
+    resume_evidence_by_id: dict[str, dict] | None = None,
 ) -> tuple[ResumeScore, dict]:
     """Reuse LLM scoring output for identical resume/schema/feedback inputs."""
     feedback_influence_mode = normalize_feedback_influence_mode(feedback_influence_mode)
@@ -379,6 +382,7 @@ def _score_resume_with_schema_cached(
             feedback_examples=feedback_examples,
             resume=resume,
             feedback_influence_mode=feedback_influence_mode,
+            resume_evidence_by_id=resume_evidence_by_id,
         )
 
     cache_key = _scoring_cache_key(
@@ -386,6 +390,7 @@ def _score_resume_with_schema_cached(
         feedback_examples=feedback_examples,
         resume=resume,
         feedback_influence_mode=feedback_influence_mode,
+        resume_evidence_by_id=resume_evidence_by_id,
     )
     cached = _SCORING_CACHE.get(cache_key)
     if cached is not None:
@@ -399,6 +404,7 @@ def _score_resume_with_schema_cached(
         feedback_examples=feedback_examples,
         resume=resume,
         feedback_influence_mode=feedback_influence_mode,
+        resume_evidence_by_id=resume_evidence_by_id,
     )
     _SCORING_CACHE[cache_key] = {
         "score": score.model_dump(),
@@ -1049,7 +1055,18 @@ async def score_resumes(
             schema_id=schema["schema_id"],
             limit_per_label=feedback_examples_per_label,
         )
-        feedback_calibration_data = build_feedback_calibration_data(feedback_examples)
+        fb_resume_ids = sorted(
+            {str(e["resume_id"]) for e in feedback_examples if e.get("resume_id")}
+        )
+        resume_evidence_by_id = (
+            {r["resume_id"]: r for r in get_resumes_by_ids(fb_resume_ids)}
+            if fb_resume_ids
+            else {}
+        )
+        feedback_calibration_data = build_feedback_calibration_data(
+            feedback_examples,
+            resume_evidence_by_id=resume_evidence_by_id,
+        )
         resumes = get_resumes_by_ids(selected_resume_ids)
         found_ids = {resume["resume_id"] for resume in resumes}
         missing_resume_ids = [
@@ -1064,6 +1081,7 @@ async def score_resumes(
                 feedback_examples=feedback_examples,
                 resume=resume,
                 feedback_influence_mode=feedback_influence_mode,
+                resume_evidence_by_id=resume_evidence_by_id,
             )
             result = score.model_dump()
             result["candidate_name"] = resume.get("candidate_name") or ""
@@ -1241,7 +1259,18 @@ async def scoring_search(
             schema_id=schema["schema_id"],
             limit_per_label=feedback_examples_per_label,
         )
-        feedback_calibration_data = build_feedback_calibration_data(feedback_examples)
+        fb_resume_ids = sorted(
+            {str(e["resume_id"]) for e in feedback_examples if e.get("resume_id")}
+        )
+        resume_evidence_by_id = (
+            {r["resume_id"]: r for r in get_resumes_by_ids(fb_resume_ids)}
+            if fb_resume_ids
+            else {}
+        )
+        feedback_calibration_data = build_feedback_calibration_data(
+            feedback_examples,
+            resume_evidence_by_id=resume_evidence_by_id,
+        )
         resumes = get_resumes_by_ids(retrieved_resume_ids)
 
         scored_results = []
@@ -1252,6 +1281,7 @@ async def scoring_search(
                 feedback_examples=feedback_examples,
                 resume=resume,
                 feedback_influence_mode=feedback_influence_mode,
+                resume_evidence_by_id=resume_evidence_by_id,
             )
             result = score.model_dump()
             result["candidate_name"] = resume.get("candidate_name") or ""

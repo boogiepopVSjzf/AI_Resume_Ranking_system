@@ -48,7 +48,9 @@ def test_scoring_cache_reuses_identical_input(monkeypatch):
 
     calls = []
 
-    def fake_score_resume_with_schema(*, schema, feedback_examples, resume, feedback_influence_mode):
+    def fake_score_resume_with_schema(
+        *, schema, feedback_examples, resume, feedback_influence_mode, resume_evidence_by_id=None
+    ):
         calls.append((schema, feedback_examples, resume))
         return _score(8.0, "first result"), {"total_tokens": 100}
 
@@ -79,7 +81,9 @@ def test_scoring_cache_key_changes_with_feedback(monkeypatch):
 
     calls = []
 
-    def fake_score_resume_with_schema(*, schema, feedback_examples, resume, feedback_influence_mode):
+    def fake_score_resume_with_schema(
+        *, schema, feedback_examples, resume, feedback_influence_mode, resume_evidence_by_id=None
+    ):
         calls.append((feedback_examples, feedback_influence_mode))
         return _score(7.0 + len(calls), f"result {len(calls)}"), {}
 
@@ -107,7 +111,9 @@ def test_scoring_cache_key_changes_with_feedback_mode(monkeypatch):
 
     calls = []
 
-    def fake_score_resume_with_schema(*, schema, feedback_examples, resume, feedback_influence_mode):
+    def fake_score_resume_with_schema(
+        *, schema, feedback_examples, resume, feedback_influence_mode, resume_evidence_by_id=None
+    ):
         calls.append(feedback_influence_mode)
         return _score(6.0 + len(calls), f"mode {feedback_influence_mode}"), {}
 
