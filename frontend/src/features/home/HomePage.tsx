@@ -74,7 +74,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
             <span />
             <span />
             <span />
-            <strong>{state.status === "ready" ? "OK" : state.status === "loading" ? "..." : "!"}</strong>
+            <strong>{state.status === "ready" ? "Ready" : state.status === "loading" ? "…" : "!"}</strong>
           </div>
           <div>
             <p className="eyebrow">Backend Signal</p>
