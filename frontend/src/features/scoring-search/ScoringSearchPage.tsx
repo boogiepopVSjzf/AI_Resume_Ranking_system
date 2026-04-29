@@ -199,6 +199,7 @@ export function ScoringSearchPage() {
             <label className="inline-control">
               <span>Screening mode</span>
               <select
+                className="text-input"
                 value={filterMode}
                 onChange={(event) => setFilterMode(event.target.value as FilterMode)}
               >

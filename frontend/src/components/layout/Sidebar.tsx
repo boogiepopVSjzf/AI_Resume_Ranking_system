@@ -9,10 +9,12 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="brand-block">
-        <div className="brand-mark">AR</div>
-        <div>
-          <p className="brand-overline">Talent OS</p>
-          <h2>RankLab</h2>
+        <a className="brand-mark" href="#top" aria-label="Entagile home">
+          <img src="/entagile-logo.png" alt="entagile" width={155} height={69} />
+        </a>
+        <div className="brand-block-text">
+          <p className="brand-overline">Recruiting suite</p>
+          <h2>Resume intelligence</h2>
         </div>
       </div>
 
@@ -36,6 +38,7 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
       <div className="sidebar-footer">
         <p>Backend</p>
         <strong>Online</strong>
+        <p className="sidebar-credit">Powered by Entagile</p>
       </div>
     </aside>
   );
