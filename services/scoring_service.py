@@ -316,7 +316,11 @@ Rules:
   as a scoring signal.
 - Do not mimic another row's label just because of surface similarity.
 - If a few-shot row changes your strictness on a rule, set `feedback_used=true`
-  for that rule and cite `human_judgment.feedback_id` in `feedback_influence`.
+  for that rule and explain the calibration effect in `feedback_influence`
+  using user-facing language such as "similar prior reviewer feedback" or
+  "same-candidate reviewer feedback".
+- Never expose raw `feedback_id` values, long hashes, UUIDs, or internal row ids
+  in `reason`, `feedback_influence`, `overall_influence`, or `explanation`.
 
 `feedback_usage_summary`: list which `feedback_id`s materially informed any rule
 in `used_feedback_ids`; put unused ids (including `n/a` rows) in

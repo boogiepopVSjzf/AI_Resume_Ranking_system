@@ -42,6 +42,30 @@ function displayCandidateName(scoreResult: ScoringResult) {
   return name && name.length > 0 ? name : scoreResult.resume_id;
 }
 
+function formatFeedbackInfluence(text: string, feedbackUsed?: boolean) {
+  const hasInternalReference =
+    /\b[0-9a-f]{16,64}\b/i.test(text) ||
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text) ||
+    /feedback[_\s-]?id/i.test(text) ||
+    /feedback from\b/i.test(text);
+
+  const cleaned = text
+    .replace(/\bfeedback\s+from\s+(?:[0-9a-f]{16,64}|[0-9a-f-]{36})\b/gi, "prior reviewer feedback")
+    .replace(/\bfeedback[_\s-]?id[:=]?\s*(?:[0-9a-f]{16,64}|[0-9a-f-]{36})?\b/gi, "prior reviewer feedback")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "")
+    .replace(/\b[0-9a-f]{16,64}\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || (hasInternalReference && cleaned.length < 24)) {
+    return feedbackUsed
+      ? "Prior reviewer feedback helped calibrate this rule."
+      : "Prior feedback did not materially affect this rule.";
+  }
+
+  return cleaned;
+}
+
 function isPdf(file: File) {
   return file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
 }
@@ -314,9 +338,6 @@ export function ScoringSearchPage() {
                       <p className="eyebrow">Candidate</p>
                       <h3>{displayCandidateName(scoreResult)}</h3>
                     </div>
-                    <div className="similarity-pill">
-                      Similarity {formatPercent(scoreResult.retrieval?.similarity_score)}
-                    </div>
                   </div>
 
                   <div className="score-overview compact">
@@ -340,8 +361,8 @@ export function ScoringSearchPage() {
                           <p>{rule.reason}</p>
                           {rule.feedback_influence && (
                             <small>
-                              {rule.feedback_used ? "Feedback used" : "Feedback not used"} ·{" "}
-                              {rule.feedback_influence}
+                              Calibration note ·{" "}
+                              {formatFeedbackInfluence(rule.feedback_influence, rule.feedback_used)}
                             </small>
                           )}
                         </article>
