@@ -27,6 +27,11 @@ export const NAV_ITEMS = [
     label: "System Settings",
     description: "Status",
   },
+  {
+    id: "hr-assistant",
+    label: "HR Assistant",
+    description: "Chat",
+  },
 ] as const;
 
 export type RouteId = (typeof NAV_ITEMS)[number]["id"];

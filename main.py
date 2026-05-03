@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from routes.api import router as api_router
+from routes.chat import router as chat_router
 from routes.llm import routes as llm_router
 from services.embedding_service import preload_embedding_model
 from services.reranker_service import preload_reranker_model
@@ -41,7 +42,8 @@ except Exception:
     pass
 
 # 把各个接口封装到总服务接口上，目前提供四个接口，也就是说在前端fastapi上可以调用4个接口
-app.include_router(api_router)  # 
+app.include_router(api_router)
+app.include_router(chat_router)
 app.include_router(llm_router)
 
 

@@ -91,3 +91,16 @@ def upload_resume_source_file(
 
     logger.info("Uploaded resume source file %s to S3 bucket %s", resume_id, bucket)
     return StorageUploadResult(bucket=bucket, key=key, mime_type=mime_type)
+
+
+def get_presigned_download_url(bucket: str, key: str, expires_in: int = 3600) -> str:
+    """Return a presigned S3 GET URL valid for expires_in seconds."""
+    client = _get_s3_client()
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+    except Exception as exc:
+        raise DatabaseError(f"Failed to generate presigned URL: {exc}") from exc

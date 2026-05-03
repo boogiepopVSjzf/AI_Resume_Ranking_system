@@ -298,6 +298,53 @@ def _ensure_schema(conn, embedding_dimension: int) -> None:
         "create index if not exists idx_feedback_examples_resume_id on feedback_examples (resume_id)",
         "create index if not exists idx_feedback_examples_label on feedback_examples (label)",
         "create index if not exists idx_feedback_examples_schema_label on feedback_examples (schema_id, label)",
+        # ── Chat session tables (agent multi-turn conversation) ──────────────
+        """
+        create table if not exists chat_sessions (
+            session_id       text primary key,
+            title            text,
+            active_schema_id text references scoring_schemas(schema_id) on delete set null,
+            hr_auto_mode     boolean not null default false,
+            provider         text,
+            model            text,
+            created_at       timestamptz not null default now(),
+            updated_at       timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_chat_sessions_created_at on chat_sessions (created_at desc)",
+        """
+        create table if not exists chat_messages (
+            message_id      text primary key,
+            session_id      text not null references chat_sessions(session_id) on delete cascade,
+            role            text not null check (role in ('user','assistant','tool','system')),
+            content         text not null,
+            tool_name       text,
+            tool_call_id    text,
+            tool_calls_json jsonb,
+            created_at      timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_chat_messages_session on chat_messages (session_id, created_at)",
+        # ── Long-term memory table ───────────────────────────────────────────
+        f"""
+        create table if not exists agent_memories (
+            memory_id       text primary key,
+            session_id      text references chat_sessions(session_id) on delete set null,
+            memory_type     text not null check (memory_type in (
+                                'hr_preference', 'session_summary',
+                                'search_result_cache', 'schema_draft_history')),
+            content         text not null,
+            content_json    jsonb,
+            embedding       vector({embedding_dimension}),
+            expires_at      timestamptz,
+            created_at      timestamptz not null default now(),
+            updated_at      timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_agent_memories_session on agent_memories (session_id)",
+        "create index if not exists idx_agent_memories_type on agent_memories (memory_type)",
+        "create index if not exists idx_agent_memories_expires on agent_memories (expires_at) where expires_at is not null",
+        "create index if not exists idx_agent_memories_embedding_hnsw on agent_memories using hnsw (embedding vector_cosine_ops) where embedding is not null",
     ]
 
     try:
@@ -910,3 +957,607 @@ def save_scoring_feedback(
         except Exception as exc:
             conn.rollback()
             raise DatabaseError(f"Failed to save scoring feedback: {exc}") from exc
+
+
+# ─────────────────────────────────────────────────────────────
+# Chat session CRUD
+# ─────────────────────────────────────────────────────────────
+
+def create_chat_session(
+    *,
+    session_id: str,
+    title: Optional[str] = None,
+    active_schema_id: Optional[str] = None,
+    hr_auto_mode: bool = False,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict[str, Any]:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into chat_sessions (session_id, title, active_schema_id, hr_auto_mode, provider, model)
+                    values (%(session_id)s, %(title)s, %(active_schema_id)s, %(hr_auto_mode)s, %(provider)s, %(model)s)
+                    returning created_at, updated_at
+                    """,
+                    {
+                        "session_id": session_id,
+                        "title": title,
+                        "active_schema_id": active_schema_id,
+                        "hr_auto_mode": hr_auto_mode,
+                        "provider": provider,
+                        "model": model,
+                    },
+                )
+                created_at, updated_at = cur.fetchone()
+            conn.commit()
+            return {
+                "session_id": session_id,
+                "title": title,
+                "active_schema_id": active_schema_id,
+                "hr_auto_mode": hr_auto_mode,
+                "provider": provider,
+                "model": model,
+                "created_at": created_at.isoformat(),
+                "updated_at": updated_at.isoformat(),
+            }
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to create chat session: {exc}") from exc
+
+
+def load_chat_session(session_id: str) -> Optional[dict[str, Any]]:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select session_id, title, active_schema_id, hr_auto_mode, provider, model,
+                           created_at, updated_at
+                    from chat_sessions where session_id = %(session_id)s
+                    """,
+                    {"session_id": session_id},
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return {
+                "session_id": row[0],
+                "title": row[1],
+                "active_schema_id": row[2],
+                "hr_auto_mode": row[3],
+                "provider": row[4],
+                "model": row[5],
+                "created_at": row[6].isoformat() if row[6] else None,
+                "updated_at": row[7].isoformat() if row[7] else None,
+            }
+        except Exception as exc:
+            raise DatabaseError(f"Failed to load chat session: {exc}") from exc
+
+
+def save_chat_session(
+    *,
+    session_id: str,
+    title: Optional[str] = None,
+    active_schema_id: Optional[str] = None,
+    hr_auto_mode: Optional[bool] = None,
+) -> None:
+    fields: list[str] = ["updated_at = now()"]
+    params: dict[str, Any] = {"session_id": session_id}
+    if title is not None:
+        fields.append("title = %(title)s")
+        params["title"] = title
+    if active_schema_id is not None:
+        fields.append("active_schema_id = %(active_schema_id)s")
+        params["active_schema_id"] = active_schema_id
+    if hr_auto_mode is not None:
+        fields.append("hr_auto_mode = %(hr_auto_mode)s")
+        params["hr_auto_mode"] = hr_auto_mode
+
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"update chat_sessions set {', '.join(fields)} where session_id = %(session_id)s",
+                    params,
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to update chat session: {exc}") from exc
+
+
+def append_chat_message(
+    *,
+    message_id: str,
+    session_id: str,
+    role: str,
+    content: str,
+    tool_name: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    tool_calls_json: Optional[list] = None,
+) -> str:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into chat_messages
+                        (message_id, session_id, role, content, tool_name, tool_call_id, tool_calls_json)
+                    values
+                        (%(message_id)s, %(session_id)s, %(role)s, %(content)s,
+                         %(tool_name)s, %(tool_call_id)s, %(tool_calls_json)s::jsonb)
+                    """,
+                    {
+                        "message_id": message_id,
+                        "session_id": session_id,
+                        "role": role,
+                        "content": content,
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "tool_calls_json": json.dumps(tool_calls_json) if tool_calls_json else None,
+                    },
+                )
+            conn.commit()
+            return message_id
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to append chat message: {exc}") from exc
+
+
+def get_chat_messages(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select message_id, session_id, role, content, tool_name, tool_call_id,
+                           tool_calls_json, created_at
+                    from chat_messages
+                    where session_id = %(session_id)s
+                    order by created_at asc, message_id asc
+                    limit %(limit)s
+                    """,
+                    {"session_id": session_id, "limit": limit},
+                )
+                rows = cur.fetchall()
+            return [
+                {
+                    "message_id": row[0],
+                    "session_id": row[1],
+                    "role": row[2],
+                    "content": row[3],
+                    "tool_name": row[4],
+                    "tool_call_id": row[5],
+                    "tool_calls_json": row[6] if isinstance(row[6], list) else None,
+                    "created_at": row[7].isoformat() if row[7] else None,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to fetch chat messages: {exc}") from exc
+
+
+def list_chat_sessions(limit: int = 20) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select session_id, title, active_schema_id, hr_auto_mode, provider, model,
+                           created_at, updated_at
+                    from chat_sessions
+                    order by updated_at desc, created_at desc
+                    limit %(limit)s
+                    """,
+                    {"limit": limit},
+                )
+                rows = cur.fetchall()
+            return [
+                {
+                    "session_id": row[0],
+                    "title": row[1],
+                    "active_schema_id": row[2],
+                    "hr_auto_mode": row[3],
+                    "provider": row[4],
+                    "model": row[5],
+                    "created_at": row[6].isoformat() if row[6] else None,
+                    "updated_at": row[7].isoformat() if row[7] else None,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to list chat sessions: {exc}") from exc
+
+
+def delete_chat_session(session_id: str) -> None:
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "delete from chat_sessions where session_id = %(session_id)s",
+                    {"session_id": session_id},
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to delete chat session: {exc}") from exc
+
+
+def get_scoring_schema_by_id(schema_id: str) -> Optional[dict[str, Any]]:
+    """Fetch a single scoring schema by its ID."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select schema_id, schema_name, rules_json, summary, version, is_active
+                    from scoring_schemas
+                    where schema_id = %(schema_id)s
+                    """,
+                    {"schema_id": schema_id},
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return {
+                "schema_id": row[0],
+                "schema_name": row[1],
+                "rules_json": row[2] if isinstance(row[2], dict) else {},
+                "summary": row[3],
+                "version": row[4],
+                "is_active": row[5],
+            }
+        except Exception as exc:
+            raise DatabaseError(f"Failed to fetch scoring schema: {exc}") from exc
+
+
+# ─────────────────────────────────────────────────────────────
+# Agent memory CRUD
+# ─────────────────────────────────────────────────────────────
+
+def store_memory(
+    *,
+    memory_id: str,
+    session_id: Optional[str],
+    memory_type: str,
+    content: str,
+    content_json: Optional[dict] = None,
+    embedding: Optional[list[float]] = None,
+    expires_at: Optional[str] = None,  # ISO timestamp or None
+) -> dict[str, Any]:
+    """Insert or replace a single memory entry."""
+    embedding_dimension = _embedding_dimension(embedding)
+    with _connect() as conn:
+        _ensure_schema(conn, embedding_dimension)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into agent_memories
+                        (memory_id, session_id, memory_type, content, content_json,
+                         embedding, expires_at)
+                    values
+                        (%(memory_id)s, %(session_id)s, %(memory_type)s, %(content)s,
+                         %(content_json)s::jsonb, %(embedding)s::vector, %(expires_at)s::timestamptz)
+                    on conflict (memory_id) do update
+                    set content      = excluded.content,
+                        content_json = excluded.content_json,
+                        embedding    = excluded.embedding,
+                        expires_at   = excluded.expires_at,
+                        updated_at   = now()
+                    returning created_at, updated_at
+                    """,
+                    {
+                        "memory_id": memory_id,
+                        "session_id": session_id,
+                        "memory_type": memory_type,
+                        "content": content,
+                        "content_json": json.dumps(content_json, ensure_ascii=False) if content_json else None,
+                        "embedding": _vector_literal(embedding),
+                        "expires_at": expires_at,
+                    },
+                )
+                created_at, updated_at = cur.fetchone()
+            conn.commit()
+            return {
+                "memory_id": memory_id,
+                "session_id": session_id,
+                "memory_type": memory_type,
+                "content": content,
+                "created_at": created_at.isoformat() if created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to store memory: {exc}") from exc
+
+
+def retrieve_memories_by_embedding(
+    query_embedding: list[float],
+    *,
+    memory_types: Optional[list[str]] = None,
+    session_id: Optional[str] = None,
+    limit: int = 5,
+    exclude_expired: bool = True,
+) -> list[dict[str, Any]]:
+    """Retrieve memories ordered by cosine similarity to the query embedding."""
+    if not query_embedding:
+        return []
+
+    where_parts = ["embedding is not null"]
+    params: dict[str, Any] = {
+        "query_embedding": _vector_literal(query_embedding),
+        "limit": limit,
+    }
+    if exclude_expired:
+        where_parts.append("(expires_at is null or expires_at > now())")
+    if memory_types:
+        where_parts.append("memory_type = any(%(memory_types)s::text[])")
+        params["memory_types"] = memory_types
+    if session_id:
+        where_parts.append("(session_id = %(session_id)s or session_id is null)")
+        params["session_id"] = session_id
+
+    where_clause = " and ".join(where_parts)
+    query = f"""
+        select memory_id, session_id, memory_type, content, content_json, expires_at,
+               created_at, 1 - (embedding <=> %(query_embedding)s::vector) as similarity
+        from agent_memories
+        where {where_clause}
+        order by embedding <=> %(query_embedding)s::vector
+        limit %(limit)s
+    """
+
+    with _connect() as conn:
+        _ensure_schema(conn, len(query_embedding))
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            return [
+                {
+                    "memory_id": row[0],
+                    "session_id": row[1],
+                    "memory_type": row[2],
+                    "content": row[3],
+                    "content_json": row[4] if isinstance(row[4], dict) else None,
+                    "expires_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                    "similarity": float(row[7]) if row[7] is not None else 0.0,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to retrieve memories: {exc}") from exc
+
+
+def get_memories_by_session(
+    session_id: str,
+    *,
+    memory_types: Optional[list[str]] = None,
+    exclude_expired: bool = True,
+) -> list[dict[str, Any]]:
+    """Fetch all memories for a given session."""
+    where_parts = ["session_id = %(session_id)s"]
+    params: dict[str, Any] = {"session_id": session_id}
+    if exclude_expired:
+        where_parts.append("(expires_at is null or expires_at > now())")
+    if memory_types:
+        where_parts.append("memory_type = any(%(memory_types)s::text[])")
+        params["memory_types"] = memory_types
+
+    where_clause = " and ".join(where_parts)
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    select memory_id, session_id, memory_type, content, content_json,
+                           expires_at, created_at
+                    from agent_memories
+                    where {where_clause}
+                    order by created_at desc
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+            return [
+                {
+                    "memory_id": row[0],
+                    "session_id": row[1],
+                    "memory_type": row[2],
+                    "content": row[3],
+                    "content_json": row[4] if isinstance(row[4], dict) else None,
+                    "expires_at": row[5].isoformat() if row[5] else None,
+                    "created_at": row[6].isoformat() if row[6] else None,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to get session memories: {exc}") from exc
+
+
+def invalidate_session_search_cache(session_id: str) -> None:
+    """Expire all search_result_cache memories for a session (called when schema changes)."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update agent_memories
+                    set expires_at = now(), updated_at = now()
+                    where session_id = %(session_id)s
+                      and memory_type = 'search_result_cache'
+                      and (expires_at is null or expires_at > now())
+                    """,
+                    {"session_id": session_id},
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise DatabaseError(f"Failed to invalidate search cache: {exc}") from exc
+
+
+def get_cached_search_results(
+    session_id: str, query_hash: str
+) -> Optional[dict[str, Any]]:
+    """Return cached search results or None if expired/missing."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select content_json
+                    from agent_memories
+                    where session_id = %(session_id)s
+                      and memory_type = 'search_result_cache'
+                      and content = %(query_hash)s
+                      and (expires_at is null or expires_at > now())
+                    order by created_at desc
+                    limit 1
+                    """,
+                    {"session_id": session_id, "query_hash": query_hash},
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return row[0] if isinstance(row[0], dict) else None
+        except Exception as exc:
+            raise DatabaseError(f"Failed to get cached search results: {exc}") from exc
+
+
+def cache_search_results(
+    session_id: str,
+    query_hash: str,
+    results: dict[str, Any],
+    ttl_hours: int = 1,
+) -> None:
+    """Store search results in the memory cache with a TTL."""
+    from datetime import datetime, timezone, timedelta
+    memory_id = f"sc_{session_id}_{query_hash[:16]}"
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat()
+    store_memory(
+        memory_id=memory_id,
+        session_id=session_id,
+        memory_type="search_result_cache",
+        content=query_hash,
+        content_json=results,
+        expires_at=expires_at,
+    )
+
+
+def find_similar_session(
+    query_embedding: list[float],
+    *,
+    similarity_threshold: float = 0.85,
+    window_days: int = 7,
+) -> Optional[dict[str, Any]]:
+    """
+    Find a recent session whose summary is semantically close to the query.
+    Returns the session_id + similarity or None.
+    """
+    if not query_embedding:
+        return None
+    with _connect() as conn:
+        _ensure_schema(conn, len(query_embedding))
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select m.session_id,
+                           1 - (m.embedding <=> %(query_embedding)s::vector) as similarity
+                    from agent_memories m
+                    join chat_sessions s on s.session_id = m.session_id
+                    where m.memory_type = 'session_summary'
+                      and m.embedding is not null
+                      and m.created_at > now() - %(window)s::interval
+                      and (m.expires_at is null or m.expires_at > now())
+                    order by m.embedding <=> %(query_embedding)s::vector
+                    limit 1
+                    """,
+                    {
+                        "query_embedding": _vector_literal(query_embedding),
+                        "window": f"{window_days} days",
+                    },
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            similarity = float(row[1]) if row[1] is not None else 0.0
+            if similarity >= similarity_threshold:
+                return {"session_id": row[0], "similarity": similarity}
+            return None
+        except Exception as exc:
+            raise DatabaseError(f"Failed to find similar session: {exc}") from exc
+
+
+def list_scoring_schemas(limit: int = 20) -> list[dict[str, Any]]:
+    """List active scoring schemas ordered by most recently updated."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select schema_id, schema_name, summary, version, is_active, created_at, updated_at
+                    from scoring_schemas
+                    where is_active = true
+                    order by updated_at desc, created_at desc
+                    limit %(limit)s
+                    """,
+                    {"limit": limit},
+                )
+                rows = cur.fetchall()
+            return [
+                {
+                    "schema_id": row[0],
+                    "schema_name": row[1],
+                    "summary": row[2],
+                    "version": row[3],
+                    "is_active": row[4],
+                    "created_at": row[5].isoformat() if row[5] else None,
+                    "updated_at": row[6].isoformat() if row[6] else None,
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to list scoring schemas: {exc}") from exc
+
+
+def get_resume_storage_info(resume_id: str) -> Optional[dict[str, Any]]:
+    """Return S3 storage fields for a resume, or None if not found / not stored."""
+    with _connect() as conn:
+        _ensure_schema(conn, settings.EMBEDDING_DIMENSION)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select pdf_storage_bucket, pdf_storage_key, pdf_mime_type
+                    from resumes
+                    where resume_id = %(resume_id)s
+                    """,
+                    {"resume_id": resume_id},
+                )
+                row = cur.fetchone()
+            if not row or not row[0] or not row[1]:
+                return None
+            return {
+                "pdf_storage_bucket": row[0],
+                "pdf_storage_key": row[1],
+                "pdf_mime_type": row[2],
+            }
+        except Exception as exc:
+            raise DatabaseError(f"Failed to get resume storage info: {exc}") from exc

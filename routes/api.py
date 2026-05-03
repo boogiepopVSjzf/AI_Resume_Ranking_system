@@ -41,13 +41,14 @@ from storage.postgres_store import (
     find_best_scoring_schema,
     get_feedback_examples,
     get_resumes_by_ids,
+    get_resume_storage_info,
     query_resume_ids_by_hard_filters,
     query_similar_resumes,
     save_scoring_feedback,
     save_scoring_schema,
     save_resume_bundle,
 )
-from storage.s3_storage import upload_resume_source_file
+from storage.s3_storage import get_presigned_download_url, upload_resume_source_file
 
 from utils.constants import (
     DEFAULT_CHUNK_SIZE,
@@ -1324,3 +1325,18 @@ async def scoring_search(
         "query_usage": query_usage,
         "scoring_usage": scoring_usage,
     }))
+
+
+@router.get("/resume/{resume_id}/url")
+def get_resume_download_url(resume_id: str):
+    """Return a short-lived presigned S3 URL for the original resume file."""
+    if not settings.ENABLE_S3_STORAGE:
+        raise HTTPException(status_code=501, detail="S3 storage is not enabled")
+    info = get_resume_storage_info(resume_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Resume file not found")
+    try:
+        url = get_presigned_download_url(info["pdf_storage_bucket"], info["pdf_storage_key"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"url": url, "expires_in": 3600}

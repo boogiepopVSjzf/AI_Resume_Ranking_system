@@ -7,6 +7,7 @@ import { SchemaStudioPage } from "../features/schema-studio/SchemaStudioPage";
 import { ResumeUploadPage } from "../features/resume-upload/ResumeUploadPage";
 import { ScoringSearchPage } from "../features/scoring-search/ScoringSearchPage";
 import { SystemSettingsPage } from "../features/system-settings/SystemSettingsPage";
+import { HrAssistantPage } from "../features/hr-assistant/HrAssistantPage";
 
 export function App() {
   const [activeRoute, setActiveRoute] = useState<RouteId>("home");
@@ -23,6 +24,8 @@ export function App() {
         return <ScoringSearchPage />;
       case "system-settings":
         return <SystemSettingsPage />;
+      case "hr-assistant":
+        return <HrAssistantPage />;
       default:
         return null;
     }
